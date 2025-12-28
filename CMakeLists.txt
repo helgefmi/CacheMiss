@@ -1,0 +1,49 @@
+cmake_minimum_required(VERSION 3.20)
+
+# Force clang++ (must be set before project())
+set(CMAKE_CXX_COMPILER clang++)
+
+project(CacheMiss VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Default to RelWithDebInfo if not specified
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo)
+endif()
+
+# Debug build: sanitizers, all warnings, no optimization
+set(CMAKE_CXX_FLAGS_DEBUG
+    "-O0 -g3 -fno-omit-frame-pointer \
+    -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion \
+    -Wnull-dereference -Wdouble-promotion -Wformat=2 \
+    -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -D_GLIBCXX_ASSERTIONS")
+set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address,undefined")
+
+# RelWithDebInfo: optimized with debug symbols for profiling
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO
+    "-O3 -g -DNDEBUG -fno-omit-frame-pointer \
+    -march=native -mtune=native \
+    -flto=thin \
+    -Wall -Wextra -Wpedantic")
+set(CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO "-flto=thin")
+
+# Release: maximum performance, no debug info
+set(CMAKE_CXX_FLAGS_RELEASE
+    "-O3 -DNDEBUG \
+    -march=native -mtune=native \
+    -flto=thin")
+set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto=thin")
+
+# Source files
+file(GLOB_RECURSE SOURCES "src/*.cpp")
+
+# Executable
+add_executable(cachemiss ${SOURCES})
+
+# Include directories
+target_include_directories(cachemiss PRIVATE src)
