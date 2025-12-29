@@ -50,7 +50,25 @@ inline Bitboard msb(Bitboard bb) {
 //
 
 enum class Color : u8 { White = 0, Black = 1 };
-enum class Piece : u8 { Pawn = 0, Knight = 1, Bishop = 2, Rook = 3, Queen = 4, King = 5 };
+constexpr Color opposite(Color c) {
+    return (c == Color::White) ? Color::Black : Color::White;
+}
+constexpr char color_to_char(Color c) {
+    return (c == Color::White) ? 'W' : 'B';
+}
+
+enum class Piece : u8 { Pawn = 0, Knight = 1, Bishop = 2, Rook = 3, Queen = 4, King = 5, None = 7 };
+constexpr char piece_to_char(Piece p) {
+    switch (p) {
+        case Piece::Pawn:   return 'P';
+        case Piece::Knight: return 'N';
+        case Piece::Bishop: return 'B';
+        case Piece::Rook:   return 'R';
+        case Piece::Queen:  return 'Q';
+        case Piece::King:   return 'K';
+        default:            return '?';
+    }
+}
 
 //
 // Square utilities
