@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <utility>
+#include <iostream>
 
 //
 // Types
@@ -45,17 +46,34 @@ inline Bitboard msb(Bitboard bb) {
     return Bitboard(1) << msb_index(bb);
 }
 
+static void print_bitboard(Bitboard bb) {
+    for (int rank = 7; rank >= 0; --rank) {
+        for (int file = 0; file < 8; ++file) {
+            int sq = rank * 8 + file;
+            std::cout << ((bb & (Bitboard(1) << sq)) ? '1' : '.') << ' ';
+        }
+        std::cout << '\n';
+    }
+    std::cout << '\n';
+}
+
 //
-// Enums
+// Color
 //
 
 enum class Color : u8 { White = 0, Black = 1 };
+
 constexpr Color opposite(Color c) {
     return (c == Color::White) ? Color::Black : Color::White;
 }
+
 constexpr char color_to_char(Color c) {
     return (c == Color::White) ? 'W' : 'B';
 }
+
+//
+// Piece
+//
 
 enum class Piece : u8 { Pawn = 0, Knight = 1, Bishop = 2, Rook = 3, Queen = 4, King = 5, None = 7 };
 constexpr char piece_to_char(Piece p) {

@@ -10,8 +10,8 @@ class Board {
     std::array<std::array<Bitboard, 6>, 2> pieces;  // pieces[Color][Piece]
     std::array<Bitboard, 2> occupied;               // occupied[Color]
     Bitboard all_occupied;
-    Bitboard en_passant;
-    Bitboard castling;
+    Bitboard en_passant;                            // The bit below the pawn that just moved two squares
+    Bitboard castling;                              // Each corner has the bit set if castling is allowed that way
     std::array<std::optional<Piece>, 64> pieces_on_square;
 
     public:

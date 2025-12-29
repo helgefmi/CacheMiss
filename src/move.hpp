@@ -10,6 +10,7 @@
 // Bits 6-11:  To square (0-63)
 // Bits 12-14: Promotion piece (0-5 for Pawn, Knight, Bishop, Rook, Queen, King; 7 for no promotion)
 // Bits 15-17: Captured piece (0-5 for Pawn, Knight, Bishop, Rook, Queen, King; 7 for no capture)
+// Bits 18+: Unused for now. Can be used for flags, and to make sure we can sort moves efficiently.
 struct Move32 {
     u32 data;
 
@@ -30,11 +31,11 @@ struct Move32 {
     constexpr bool is_capture() const { return captured() != Piece::None; }
     constexpr bool is_promotion() const { return promotion() != Piece::None; }
 
-    constexpr std::string to_string() const {
+    std::string to_string() const {
         std::string move_str;
-        move_str += 'A' + (from() % 8);
+        move_str += 'a' + (from() % 8);
         move_str += '1' + (from() / 8);
-        move_str += 'A' + (to() % 8);
+        move_str += 'a' + (to() % 8);
         move_str += '1' + (to() / 8);
         if (is_capture()) {
             move_str += 'x';

@@ -39,11 +39,14 @@ set(CMAKE_CXX_FLAGS_RELEASE
     -flto=thin")
 set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto=thin")
 
-# Source files
+# Source files for main executable (exclude generator)
 file(GLOB_RECURSE SOURCES "src/*.cpp")
+list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/gen_magics.cpp")
 
-# Executable
+# Main executable
 add_executable(cachemiss ${SOURCES})
-
-# Include directories
 target_include_directories(cachemiss PRIVATE src)
+
+# Magic bitboard generator (standalone tool)
+add_executable(gen_magics src/gen_magics.cpp)
+target_include_directories(gen_magics PRIVATE src)
