@@ -1,22 +1,26 @@
+#include "bench.hpp"
 #include "board.hpp"
 #include "move.hpp"
 #include "perft.hpp"
+#include <cstring>
 #include <iostream>
 #include <string>
-#include <cstring>
 
 void print_usage(const char* prog) {
     std::cerr << "Usage: " << prog << " [options]\n"
               << "Options:\n"
               << "  -fen <fen>      Set position (default: starting position)\n"
               << "  -perft <depth>  Run perft to given depth\n"
-              << "  -divide <depth> Run divide (perft per move) to given depth\n";
+              << "  -divide <depth> Run divide (perft per move) to given depth\n"
+              << "  -bench-perftsuite <file> [max_depth]  Run perft test suite\n";
 }
 
 int main(int argc, char* argv[]) {
     std::string fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     int perft_depth = 0;
     int divide_depth = 0;
+    std::string perftsuite_file;
+    int perftsuite_max_depth = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-fen") == 0 && i + 1 < argc) {
@@ -25,6 +29,11 @@ int main(int argc, char* argv[]) {
             perft_depth = std::stoi(argv[++i]);
         } else if (strcmp(argv[i], "-divide") == 0 && i + 1 < argc) {
             divide_depth = std::stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-bench-perftsuite") == 0 && i + 1 < argc) {
+            perftsuite_file = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+                perftsuite_max_depth = std::stoi(argv[++i]);
+            }
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -33,6 +42,11 @@ int main(int argc, char* argv[]) {
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    if (!perftsuite_file.empty()) {
+        bench_perftsuite(perftsuite_file, perftsuite_max_depth);
+        return 0;
     }
 
     Board board(fen);
