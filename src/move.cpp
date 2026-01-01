@@ -129,8 +129,11 @@ std::vector<Move32> generate_moves(const Board& board) {
         Bitboard captures = PAWN_ATTACKS[(int)turn][from_sq] & (enemy_occupied | board.en_passant);
         for (Bitboard cap_bb = captures; cap_bb; cap_bb &= cap_bb - 1) {
             int to_sq = lsb_index(cap_bb);
-            Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.emplace_back(from_sq, to_sq, Piece::None, captured_piece);
+            bool is_ep = square_bb(to_sq) & board.en_passant;
+            Piece captured_piece = is_ep ? Piece::Pawn : board.pieces_on_square[to_sq];
+            Move32 m(from_sq, to_sq, Piece::None, captured_piece);
+            if (is_ep) m.set_en_passant();
+            moves.push_back(m);
         }
     }
 
@@ -199,7 +202,9 @@ std::vector<Move32> generate_moves(const Board& board) {
                     !is_attacked<enemy>(E1, board) &&
                     !is_attacked<enemy>(F1, board) &&
                     !is_attacked<enemy>(G1, board)) {
-                    moves.emplace_back(E1, G1);
+                    Move32 m(E1, G1);
+                    m.set_castling();
+                    moves.push_back(m);
                 }
                 // Queenside: rights + path empty + e1,d1,c1 not attacked
                 if ((board.castling & WHITE_OOO_RIGHT) &&
@@ -207,7 +212,9 @@ std::vector<Move32> generate_moves(const Board& board) {
                     !is_attacked<enemy>(E1, board) &&
                     !is_attacked<enemy>(D1, board) &&
                     !is_attacked<enemy>(C1, board)) {
-                    moves.emplace_back(E1, C1);
+                    Move32 m(E1, C1);
+                    m.set_castling();
+                    moves.push_back(m);
                 }
             }
         } else {
@@ -218,7 +225,9 @@ std::vector<Move32> generate_moves(const Board& board) {
                     !is_attacked<enemy>(E8, board) &&
                     !is_attacked<enemy>(F8, board) &&
                     !is_attacked<enemy>(G8, board)) {
-                    moves.emplace_back(E8, G8);
+                    Move32 m(E8, G8);
+                    m.set_castling();
+                    moves.push_back(m);
                 }
                 // Queenside
                 if ((board.castling & BLACK_OOO_RIGHT) &&
@@ -226,7 +235,9 @@ std::vector<Move32> generate_moves(const Board& board) {
                     !is_attacked<enemy>(E8, board) &&
                     !is_attacked<enemy>(D8, board) &&
                     !is_attacked<enemy>(C8, board)) {
-                    moves.emplace_back(E8, C8);
+                    Move32 m(E8, C8);
+                    m.set_castling();
+                    moves.push_back(m);
                 }
             }
         }
@@ -235,5 +246,179 @@ std::vector<Move32> generate_moves(const Board& board) {
     return moves;
 }
 
-template std::vector<Move32> generate_moves<Color::White>(const Board&);
-template std::vector<Move32> generate_moves<Color::Black>(const Board&);
+std::vector<Move32> generate_moves(const Board& board) {
+    if (board.turn == Color::White) {
+        return generate_moves<Color::White>(board);
+    } else {
+        return generate_moves<Color::Black>(board);
+    }
+}
+
+// Castling rook squares
+constexpr int A1 = 0, H1 = 7, A8 = 56, H8 = 63;
+
+// Castling rights masks for each corner
+constexpr Bitboard CASTLING_MASK[64] = {
+    ~(1ULL << A1), ~0ULL, ~0ULL, ~0ULL, ~((1ULL << A1) | (1ULL << H1)), ~0ULL, ~0ULL, ~(1ULL << H1),  // rank 1
+    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
+    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
+    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
+    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
+    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
+    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
+    ~(1ULL << A8), ~0ULL, ~0ULL, ~0ULL, ~((1ULL << A8) | (1ULL << H8)), ~0ULL, ~0ULL, ~(1ULL << H8)   // rank 8
+};
+
+void make_move(Board& board, Move32& move) {
+    const int from = move.from();
+    const int to = move.to();
+    const Piece promotion = move.promotion();
+    const Piece captured = move.captured();
+    const Color turn = board.turn;
+    const Color enemy = opposite(turn);
+    const Piece piece = board.pieces_on_square[from];
+    const Piece to_piece = promotion != Piece::None ? promotion : piece;
+
+    // Save undo info
+    move.set_undo_info(board.castling, board.en_passant);
+
+    // Flip turn
+    board.turn = enemy;
+
+    // Clear en passant (will be set below if this is a double pawn push)
+    board.en_passant = 0;
+
+    // Move the piece
+    board.pieces_on_square[to] = to_piece;
+    board.pieces_on_square[from] = Piece::None;
+
+    board.occupied[(int)turn] &= ~square_bb(from);
+    board.occupied[(int)turn] |= square_bb(to);
+    board.pieces[(int)turn][(int)piece] &= ~square_bb(from);
+    board.pieces[(int)turn][(int)to_piece] |= square_bb(to);
+
+    // Handle captures
+    if (captured != Piece::None) {
+        if (move.is_en_passant()) {
+            // En passant: captured pawn is behind the destination square
+            int captured_sq = (turn == Color::White) ? to - 8 : to + 8;
+            board.pieces_on_square[captured_sq] = Piece::None;
+            board.occupied[(int)enemy] &= ~square_bb(captured_sq);
+            board.pieces[(int)enemy][(int)Piece::Pawn] &= ~square_bb(captured_sq);
+        } else {
+            board.occupied[(int)enemy] &= ~square_bb(to);
+            board.pieces[(int)enemy][(int)captured] &= ~square_bb(to);
+        }
+    }
+
+    // Handle castling
+    if (move.is_castling()) {
+        int rook_from, rook_to;
+        if (to == G1) { rook_from = H1; rook_to = F1; }
+        else if (to == C1) { rook_from = A1; rook_to = D1; }
+        else if (to == G8) { rook_from = H8; rook_to = F8; }
+        else { rook_from = A8; rook_to = D8; }  // C8
+
+        board.pieces_on_square[rook_to] = Piece::Rook;
+        board.pieces_on_square[rook_from] = Piece::None;
+        board.occupied[(int)turn] &= ~square_bb(rook_from);
+        board.occupied[(int)turn] |= square_bb(rook_to);
+        board.pieces[(int)turn][(int)Piece::Rook] &= ~square_bb(rook_from);
+        board.pieces[(int)turn][(int)Piece::Rook] |= square_bb(rook_to);
+    }
+
+    // Update all_occupied
+    board.all_occupied = board.occupied[0] | board.occupied[1];
+
+    // Update castling rights
+    board.castling &= CASTLING_MASK[from] & CASTLING_MASK[to];
+
+    // Set en passant target if double pawn push
+    if (piece == Piece::Pawn) {
+        int diff = to - from;
+        if (diff == 16) {  // White double push
+            board.en_passant = square_bb(from + 8);
+        } else if (diff == -16) {  // Black double push
+            board.en_passant = square_bb(from - 8);
+        }
+    }
+}
+
+void unmake_move(Board& board, const Move32& move) {
+    const int from = move.from();
+    const int to = move.to();
+    const Piece promotion = move.promotion();
+    const Piece captured = move.captured();
+
+    // Flip turn back
+    board.turn = opposite(board.turn);
+    const Color turn = board.turn;
+    const Color enemy = opposite(turn);
+
+    // Restore castling rights and en passant
+    board.castling = move.prev_castling_bb();
+    board.en_passant = move.prev_ep_bb();
+
+    // Determine original piece (pawn if this was a promotion)
+    const Piece to_piece = board.pieces_on_square[to];
+    const Piece piece = (promotion != Piece::None) ? Piece::Pawn : to_piece;
+
+    // Move piece back
+    board.pieces_on_square[from] = piece;
+    board.pieces_on_square[to] = Piece::None;
+
+    board.occupied[(int)turn] |= square_bb(from);
+    board.occupied[(int)turn] &= ~square_bb(to);
+    board.pieces[(int)turn][(int)piece] |= square_bb(from);
+    board.pieces[(int)turn][(int)to_piece] &= ~square_bb(to);
+
+    // Restore captured piece
+    if (captured != Piece::None) {
+        if (move.is_en_passant()) {
+            // En passant: restore pawn behind destination square
+            int captured_sq = (turn == Color::White) ? to - 8 : to + 8;
+            board.pieces_on_square[captured_sq] = Piece::Pawn;
+            board.occupied[(int)enemy] |= square_bb(captured_sq);
+            board.pieces[(int)enemy][(int)Piece::Pawn] |= square_bb(captured_sq);
+        } else {
+            board.pieces_on_square[to] = captured;
+            board.occupied[(int)enemy] |= square_bb(to);
+            board.pieces[(int)enemy][(int)captured] |= square_bb(to);
+        }
+    }
+
+    // Undo castling rook move
+    if (move.is_castling()) {
+        int rook_from, rook_to;
+        if (to == G1) { rook_from = H1; rook_to = F1; }
+        else if (to == C1) { rook_from = A1; rook_to = D1; }
+        else if (to == G8) { rook_from = H8; rook_to = F8; }
+        else { rook_from = A8; rook_to = D8; }  // C8
+
+        board.pieces_on_square[rook_from] = Piece::Rook;
+        board.pieces_on_square[rook_to] = Piece::None;
+        board.occupied[(int)turn] |= square_bb(rook_from);
+        board.occupied[(int)turn] &= ~square_bb(rook_to);
+        board.pieces[(int)turn][(int)Piece::Rook] |= square_bb(rook_from);
+        board.pieces[(int)turn][(int)Piece::Rook] &= ~square_bb(rook_to);
+    }
+
+    // Update all_occupied
+    board.all_occupied = board.occupied[0] | board.occupied[1];
+}
+
+bool is_attacked(int square, Color attacker, const Board& board) {
+    if (attacker == Color::White) {
+        return is_attacked<Color::White>(square, board);
+    } else {
+        return is_attacked<Color::Black>(square, board);
+    }
+}
+
+bool in_check(const Board& board) {
+    Color us = board.turn;
+    Color them = opposite(us);
+    Bitboard king_bb = board.pieces[(int)us][(int)Piece::King];
+    int king_sq = lsb_index(king_bb);
+    return is_attacked(king_sq, them, board);
+}
