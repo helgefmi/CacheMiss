@@ -20,6 +20,51 @@ inline Bitboard get_queen_attacks(int square, Bitboard occupancy) {
     return get_rook_attacks(square, occupancy) | get_bishop_attacks(square, occupancy);
 }
 
+// Check if a square is attacked by the given color (super-piece approach)
+template <Color attacker>
+inline bool is_attacked(int square, const Board& board) {
+    Bitboard occ = board.all_occupied;
+
+    // Sliding pieces
+    if (get_rook_attacks(square, occ) &
+        (board.pieces[(int)attacker][(int)Piece::Rook] |
+         board.pieces[(int)attacker][(int)Piece::Queen]))
+        return true;
+
+    if (get_bishop_attacks(square, occ) &
+        (board.pieces[(int)attacker][(int)Piece::Bishop] |
+         board.pieces[(int)attacker][(int)Piece::Queen]))
+        return true;
+
+    // Non-sliding pieces
+    if (KNIGHT_MOVES[square] & board.pieces[(int)attacker][(int)Piece::Knight])
+        return true;
+
+    if (KING_MOVES[square] & board.pieces[(int)attacker][(int)Piece::King])
+        return true;
+
+    // Pawns - use opposite color's attack pattern
+    constexpr Color defender = (attacker == Color::White) ? Color::Black : Color::White;
+    if (PAWN_ATTACKS[(int)defender][square] & board.pieces[(int)attacker][(int)Piece::Pawn])
+        return true;
+
+    return false;
+}
+
+// Castling constants
+constexpr int E1 = 4, G1 = 6, C1 = 2, F1 = 5, D1 = 3;
+constexpr int E8 = 60, G8 = 62, C8 = 58, F8 = 61, D8 = 59;
+
+constexpr Bitboard WHITE_OO_RIGHT  = 1ULL << 7;   // h1
+constexpr Bitboard WHITE_OOO_RIGHT = 1ULL << 0;   // a1
+constexpr Bitboard BLACK_OO_RIGHT  = 1ULL << 63;  // h8
+constexpr Bitboard BLACK_OOO_RIGHT = 1ULL << 56;  // a8
+
+constexpr Bitboard WHITE_OO_PATH  = (1ULL << F1) | (1ULL << G1);
+constexpr Bitboard WHITE_OOO_PATH = (1ULL << 1) | (1ULL << C1) | (1ULL << D1);  // b1, c1, d1
+constexpr Bitboard BLACK_OO_PATH  = (1ULL << F8) | (1ULL << G8);
+constexpr Bitboard BLACK_OOO_PATH = (1ULL << 57) | (1ULL << C8) | (1ULL << D8); // b8, c8, d8
+
 template <Color turn>
 std::vector<Move32> generate_moves(const Board& board) {
     std::vector<Move32> moves;
@@ -72,7 +117,7 @@ std::vector<Move32> generate_moves(const Board& board) {
             int to_sq = lsb_index(single_move);
             moves.emplace_back(from_sq, to_sq);
 
-            // Double push (PAWN_MOVES_TWO is zero except from starting rank)
+            // Double push
             Bitboard double_move = PAWN_MOVES_TWO[(int)turn][from_sq] & not_occupied;
             if (double_move) {
                 int to_sq_double = lsb_index(double_move);
@@ -141,6 +186,49 @@ std::vector<Move32> generate_moves(const Board& board) {
             int to_sq = lsb_index(to_bb);
             Piece captured_piece = board.pieces_on_square[to_sq];
             moves.emplace_back(from_sq, to_sq, Piece::None, captured_piece);
+        }
+
+        // Castling
+        constexpr Color enemy = (turn == Color::White) ? Color::Black : Color::White;
+
+        if constexpr (turn == Color::White) {
+            if (from_sq == E1) {
+                // Kingside: rights + path empty + e1,f1,g1 not attacked
+                if ((board.castling & WHITE_OO_RIGHT) &&
+                    !(board.all_occupied & WHITE_OO_PATH) &&
+                    !is_attacked<enemy>(E1, board) &&
+                    !is_attacked<enemy>(F1, board) &&
+                    !is_attacked<enemy>(G1, board)) {
+                    moves.emplace_back(E1, G1);
+                }
+                // Queenside: rights + path empty + e1,d1,c1 not attacked
+                if ((board.castling & WHITE_OOO_RIGHT) &&
+                    !(board.all_occupied & WHITE_OOO_PATH) &&
+                    !is_attacked<enemy>(E1, board) &&
+                    !is_attacked<enemy>(D1, board) &&
+                    !is_attacked<enemy>(C1, board)) {
+                    moves.emplace_back(E1, C1);
+                }
+            }
+        } else {
+            if (from_sq == E8) {
+                // Kingside
+                if ((board.castling & BLACK_OO_RIGHT) &&
+                    !(board.all_occupied & BLACK_OO_PATH) &&
+                    !is_attacked<enemy>(E8, board) &&
+                    !is_attacked<enemy>(F8, board) &&
+                    !is_attacked<enemy>(G8, board)) {
+                    moves.emplace_back(E8, G8);
+                }
+                // Queenside
+                if ((board.castling & BLACK_OOO_RIGHT) &&
+                    !(board.all_occupied & BLACK_OOO_PATH) &&
+                    !is_attacked<enemy>(E8, board) &&
+                    !is_attacked<enemy>(D8, board) &&
+                    !is_attacked<enemy>(C8, board)) {
+                    moves.emplace_back(E8, C8);
+                }
+            }
         }
     }
 
