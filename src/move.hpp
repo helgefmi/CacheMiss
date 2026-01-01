@@ -2,7 +2,6 @@
 
 #include "cachemiss.hpp"
 #include "board.hpp"
-#include <vector>
 #include <string>
 
 // A move is packed into a 32 bit integer as follows:
@@ -82,12 +81,27 @@ struct Move32 {
     }
 };
 
-template <Color turn>
-std::vector<Move32> generate_moves(const Board& board);
-std::vector<Move32> generate_moves(const Board& board);
+struct MoveList {
+    static constexpr int MAX_MOVES = 256;
+
+    Move32 moves[MAX_MOVES];
+    int size = 0;
+
+    void add(Move32 move) { moves[size++] = move; }
+
+    Move32* begin() { return moves; }
+    Move32* end() { return moves + size; }
+    const Move32* begin() const { return moves; }
+    const Move32* end() const { return moves + size; }
+
+    Move32& operator[](int i) { return moves[i]; }
+    const Move32& operator[](int i) const { return moves[i]; }
+};
+
+template <Color turn> MoveList generate_moves(const Board& board);
+MoveList generate_moves(const Board& board);
 
 void make_move(Board& board, Move32& move);
 void unmake_move(Board& board, const Move32& move);
 
 bool is_attacked(int square, Color attacker, const Board& board);
-bool in_check(const Board& board);  // Is the side to move in check?

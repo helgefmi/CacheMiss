@@ -23,19 +23,6 @@ inline Bitboard get_queen_attacks(int square, Bitboard occupancy) {
 // Check if a square is attacked by the given color (super-piece approach)
 template <Color attacker>
 inline bool is_attacked(int square, const Board& board) {
-    Bitboard occ = board.all_occupied;
-
-    // Sliding pieces
-    if (get_rook_attacks(square, occ) &
-        (board.pieces[(int)attacker][(int)Piece::Rook] |
-         board.pieces[(int)attacker][(int)Piece::Queen]))
-        return true;
-
-    if (get_bishop_attacks(square, occ) &
-        (board.pieces[(int)attacker][(int)Piece::Bishop] |
-         board.pieces[(int)attacker][(int)Piece::Queen]))
-        return true;
-
     // Non-sliding pieces
     if (KNIGHT_MOVES[square] & board.pieces[(int)attacker][(int)Piece::Knight])
         return true;
@@ -46,6 +33,19 @@ inline bool is_attacked(int square, const Board& board) {
     // Pawns - use opposite color's attack pattern
     constexpr Color defender = (attacker == Color::White) ? Color::Black : Color::White;
     if (PAWN_ATTACKS[(int)defender][square] & board.pieces[(int)attacker][(int)Piece::Pawn])
+        return true;
+
+    // Sliding pieces
+    Bitboard occ = board.all_occupied;
+
+    if (get_rook_attacks(square, occ) &
+        (board.pieces[(int)attacker][(int)Piece::Rook] |
+         board.pieces[(int)attacker][(int)Piece::Queen]))
+        return true;
+
+    if (get_bishop_attacks(square, occ) &
+        (board.pieces[(int)attacker][(int)Piece::Bishop] |
+         board.pieces[(int)attacker][(int)Piece::Queen]))
         return true;
 
     return false;
@@ -66,8 +66,8 @@ constexpr Bitboard BLACK_OO_PATH  = (1ULL << F8) | (1ULL << G8);
 constexpr Bitboard BLACK_OOO_PATH = (1ULL << 57) | (1ULL << C8) | (1ULL << D8); // b8, c8, d8
 
 template <Color turn>
-std::vector<Move32> generate_moves(const Board& board) {
-    std::vector<Move32> moves;
+MoveList generate_moves(const Board& board) {
+    MoveList moves;
 
     const Bitboard not_occupied = ~board.all_occupied;
     const Bitboard enemy_occupied = board.occupied[(int)turn ^ 1];
@@ -89,10 +89,10 @@ std::vector<Move32> generate_moves(const Board& board) {
         Bitboard single_move = PAWN_MOVES_ONE[(int)turn][from_sq] & not_occupied;
         if (single_move) {
             int to_sq = lsb_index(single_move);
-            moves.emplace_back(from_sq, to_sq, Piece::Queen);
-            moves.emplace_back(from_sq, to_sq, Piece::Rook);
-            moves.emplace_back(from_sq, to_sq, Piece::Bishop);
-            moves.emplace_back(from_sq, to_sq, Piece::Knight);
+            moves.add(Move32(from_sq, to_sq, Piece::Queen));
+            moves.add(Move32(from_sq, to_sq, Piece::Rook));
+            moves.add(Move32(from_sq, to_sq, Piece::Bishop));
+            moves.add(Move32(from_sq, to_sq, Piece::Knight));
         }
 
         // Capture promotions
@@ -100,10 +100,10 @@ std::vector<Move32> generate_moves(const Board& board) {
         for (Bitboard cap_bb = captures; cap_bb; cap_bb &= cap_bb - 1) {
             int to_sq = lsb_index(cap_bb);
             Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.emplace_back(from_sq, to_sq, Piece::Queen, captured_piece);
-            moves.emplace_back(from_sq, to_sq, Piece::Rook, captured_piece);
-            moves.emplace_back(from_sq, to_sq, Piece::Bishop, captured_piece);
-            moves.emplace_back(from_sq, to_sq, Piece::Knight, captured_piece);
+            moves.add(Move32(from_sq, to_sq, Piece::Queen, captured_piece));
+            moves.add(Move32(from_sq, to_sq, Piece::Rook, captured_piece));
+            moves.add(Move32(from_sq, to_sq, Piece::Bishop, captured_piece));
+            moves.add(Move32(from_sq, to_sq, Piece::Knight, captured_piece));
         }
     }
 
@@ -115,13 +115,13 @@ std::vector<Move32> generate_moves(const Board& board) {
         Bitboard single_move = PAWN_MOVES_ONE[(int)turn][from_sq] & not_occupied;
         if (single_move) {
             int to_sq = lsb_index(single_move);
-            moves.emplace_back(from_sq, to_sq);
+            moves.add(Move32(from_sq, to_sq));
 
             // Double push
             Bitboard double_move = PAWN_MOVES_TWO[(int)turn][from_sq] & not_occupied;
             if (double_move) {
                 int to_sq_double = lsb_index(double_move);
-                moves.emplace_back(from_sq, to_sq_double);
+                moves.add(Move32(from_sq, to_sq_double));
             }
         }
 
@@ -133,7 +133,7 @@ std::vector<Move32> generate_moves(const Board& board) {
             Piece captured_piece = is_ep ? Piece::Pawn : board.pieces_on_square[to_sq];
             Move32 m(from_sq, to_sq, Piece::None, captured_piece);
             if (is_ep) m.set_en_passant();
-            moves.push_back(m);
+            moves.add(m);
         }
     }
 
@@ -144,7 +144,7 @@ std::vector<Move32> generate_moves(const Board& board) {
         for (Bitboard to_bb = knight_moves; to_bb; to_bb &= to_bb - 1) {
             int to_sq = lsb_index(to_bb);
             Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.emplace_back(from_sq, to_sq, Piece::None, captured_piece);
+            moves.add(Move32(from_sq, to_sq, Piece::None, captured_piece));
         }
     }
 
@@ -155,7 +155,7 @@ std::vector<Move32> generate_moves(const Board& board) {
         for (Bitboard to_bb = rook_moves; to_bb; to_bb &= to_bb - 1) {
             int to_sq = lsb_index(to_bb);
             Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.emplace_back(from_sq, to_sq, Piece::None, captured_piece);
+            moves.add(Move32(from_sq, to_sq, Piece::None, captured_piece));
         }
     }
 
@@ -166,7 +166,7 @@ std::vector<Move32> generate_moves(const Board& board) {
         for (Bitboard to_bb = bishop_moves; to_bb; to_bb &= to_bb - 1) {
             int to_sq = lsb_index(to_bb);
             Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.emplace_back(from_sq, to_sq, Piece::None, captured_piece);
+            moves.add(Move32(from_sq, to_sq, Piece::None, captured_piece));
         }
     }
 
@@ -177,7 +177,7 @@ std::vector<Move32> generate_moves(const Board& board) {
         for (Bitboard to_bb = queen_moves; to_bb; to_bb &= to_bb - 1) {
             int to_sq = lsb_index(to_bb);
             Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.emplace_back(from_sq, to_sq, Piece::None, captured_piece);
+            moves.add(Move32(from_sq, to_sq, Piece::None, captured_piece));
         }
     }
 
@@ -188,7 +188,7 @@ std::vector<Move32> generate_moves(const Board& board) {
         for (Bitboard to_bb = king_moves; to_bb; to_bb &= to_bb - 1) {
             int to_sq = lsb_index(to_bb);
             Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.emplace_back(from_sq, to_sq, Piece::None, captured_piece);
+            moves.add(Move32(from_sq, to_sq, Piece::None, captured_piece));
         }
 
         // Castling
@@ -204,7 +204,7 @@ std::vector<Move32> generate_moves(const Board& board) {
                     !is_attacked<enemy>(G1, board)) {
                     Move32 m(E1, G1);
                     m.set_castling();
-                    moves.push_back(m);
+                    moves.add(m);
                 }
                 // Queenside: rights + path empty + e1,d1,c1 not attacked
                 if ((board.castling & WHITE_OOO_RIGHT) &&
@@ -214,7 +214,7 @@ std::vector<Move32> generate_moves(const Board& board) {
                     !is_attacked<enemy>(C1, board)) {
                     Move32 m(E1, C1);
                     m.set_castling();
-                    moves.push_back(m);
+                    moves.add(m);
                 }
             }
         } else {
@@ -227,7 +227,7 @@ std::vector<Move32> generate_moves(const Board& board) {
                     !is_attacked<enemy>(G8, board)) {
                     Move32 m(E8, G8);
                     m.set_castling();
-                    moves.push_back(m);
+                    moves.add(m);
                 }
                 // Queenside
                 if ((board.castling & BLACK_OOO_RIGHT) &&
@@ -237,7 +237,7 @@ std::vector<Move32> generate_moves(const Board& board) {
                     !is_attacked<enemy>(C8, board)) {
                     Move32 m(E8, C8);
                     m.set_castling();
-                    moves.push_back(m);
+                    moves.add(m);
                 }
             }
         }
@@ -246,7 +246,7 @@ std::vector<Move32> generate_moves(const Board& board) {
     return moves;
 }
 
-std::vector<Move32> generate_moves(const Board& board) {
+MoveList generate_moves(const Board& board) {
     if (board.turn == Color::White) {
         return generate_moves<Color::White>(board);
     } else {
@@ -413,12 +413,4 @@ bool is_attacked(int square, Color attacker, const Board& board) {
     } else {
         return is_attacked<Color::Black>(square, board);
     }
-}
-
-bool in_check(const Board& board) {
-    Color us = board.turn;
-    Color them = opposite(us);
-    Bitboard king_bb = board.pieces[(int)us][(int)Piece::King];
-    int king_sq = lsb_index(king_bb);
-    return is_attacked(king_sq, them, board);
 }
