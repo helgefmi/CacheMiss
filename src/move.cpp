@@ -3,6 +3,7 @@
 #include "precalc.hpp"
 #include "magic_tables.hpp"
 #include "move.hpp"
+#include "zobrist.hpp"
 
 inline Bitboard get_rook_attacks(int square, Bitboard occupancy) {
     occupancy &= ROOK_MASKS[square];
@@ -287,31 +288,37 @@ void make_move(Board& board, Move32& move) {
     move.set_undo_info(board.castling, board.ep_file);
 
     // Flip turn
+    u64 h = board.hash ^ zobrist::side_to_move;
     board.turn = enemy;
 
-    // Clear en passant (will be set below if this is a double pawn push)
-    board.ep_file = 8;  // 8 = no en passant
+    // Clear en passant
+    if (board.ep_file < 8) {
+        h ^= zobrist::ep_file[board.ep_file];
+    }
+    board.ep_file = 8;
 
     // Move the piece
     board.pieces_on_square[to] = to_piece;
     board.pieces_on_square[from] = Piece::None;
-
     board.occupied[(int)turn] &= ~square_bb(from);
     board.occupied[(int)turn] |= square_bb(to);
     board.pieces[(int)turn][(int)piece] &= ~square_bb(from);
     board.pieces[(int)turn][(int)to_piece] |= square_bb(to);
+    h ^= zobrist::pieces[(int)turn][(int)piece][from];
+    h ^= zobrist::pieces[(int)turn][(int)to_piece][to];
 
     // Handle captures
     if (captured != Piece::None) {
         if (move.is_en_passant()) {
-            // En passant: captured pawn is behind the destination square
             int captured_sq = (turn == Color::White) ? to - 8 : to + 8;
             board.pieces_on_square[captured_sq] = Piece::None;
             board.occupied[(int)enemy] &= ~square_bb(captured_sq);
             board.pieces[(int)enemy][(int)Piece::Pawn] &= ~square_bb(captured_sq);
+            h ^= zobrist::pieces[(int)enemy][(int)Piece::Pawn][captured_sq];
         } else {
             board.occupied[(int)enemy] &= ~square_bb(to);
             board.pieces[(int)enemy][(int)captured] &= ~square_bb(to);
+            h ^= zobrist::pieces[(int)enemy][(int)captured][to];
         }
     }
 
@@ -321,7 +328,7 @@ void make_move(Board& board, Move32& move) {
         if (to == G1) { rook_from = H1; rook_to = F1; }
         else if (to == C1) { rook_from = A1; rook_to = D1; }
         else if (to == G8) { rook_from = H8; rook_to = F8; }
-        else { rook_from = A8; rook_to = D8; }  // C8
+        else { rook_from = A8; rook_to = D8; }
 
         board.pieces_on_square[rook_to] = Piece::Rook;
         board.pieces_on_square[rook_from] = Piece::None;
@@ -329,21 +336,28 @@ void make_move(Board& board, Move32& move) {
         board.occupied[(int)turn] |= square_bb(rook_to);
         board.pieces[(int)turn][(int)Piece::Rook] &= ~square_bb(rook_from);
         board.pieces[(int)turn][(int)Piece::Rook] |= square_bb(rook_to);
+        h ^= zobrist::pieces[(int)turn][(int)Piece::Rook][rook_from];
+        h ^= zobrist::pieces[(int)turn][(int)Piece::Rook][rook_to];
     }
 
     // Update all_occupied
     board.all_occupied = board.occupied[0] | board.occupied[1];
 
     // Update castling rights
+    h ^= zobrist::castling[board.castling];
     board.castling &= CASTLING_MASK[from] & CASTLING_MASK[to];
+    h ^= zobrist::castling[board.castling];
 
     // Set en passant target if double pawn push
     if (piece == Piece::Pawn) {
         int diff = to - from;
-        if (diff == 16 || diff == -16) {  // Double push
-            board.ep_file = from % 8;  // Store just the file
+        if (diff == 16 || diff == -16) {
+            board.ep_file = from % 8;
+            h ^= zobrist::ep_file[board.ep_file];
         }
     }
+
+    board.hash = h;
 }
 
 void unmake_move(Board& board, const Move32& move) {
@@ -357,35 +371,49 @@ void unmake_move(Board& board, const Move32& move) {
     const Color turn = board.turn;
     const Color enemy = opposite(turn);
 
-    // Restore castling rights and en passant
-    board.castling = move.prev_castling();
-    board.ep_file = move.prev_ep_file();
-
     // Determine original piece (pawn if this was a promotion)
     const Piece to_piece = board.pieces_on_square[to];
     const Piece piece = (promotion != Piece::None) ? Piece::Pawn : to_piece;
 
+    u64 h = board.hash ^ zobrist::side_to_move;
+
+    // Restore en passant
+    if (board.ep_file < 8) {
+        h ^= zobrist::ep_file[board.ep_file];
+    }
+    board.ep_file = move.prev_ep_file();
+    if (board.ep_file < 8) {
+        h ^= zobrist::ep_file[board.ep_file];
+    }
+
+    // Restore castling rights
+    h ^= zobrist::castling[board.castling];
+    board.castling = move.prev_castling();
+    h ^= zobrist::castling[board.castling];
+
     // Move piece back
     board.pieces_on_square[from] = piece;
     board.pieces_on_square[to] = Piece::None;
-
     board.occupied[(int)turn] |= square_bb(from);
     board.occupied[(int)turn] &= ~square_bb(to);
     board.pieces[(int)turn][(int)piece] |= square_bb(from);
     board.pieces[(int)turn][(int)to_piece] &= ~square_bb(to);
+    h ^= zobrist::pieces[(int)turn][(int)piece][from];
+    h ^= zobrist::pieces[(int)turn][(int)to_piece][to];
 
     // Restore captured piece
     if (captured != Piece::None) {
         if (move.is_en_passant()) {
-            // En passant: restore pawn behind destination square
             int captured_sq = (turn == Color::White) ? to - 8 : to + 8;
             board.pieces_on_square[captured_sq] = Piece::Pawn;
             board.occupied[(int)enemy] |= square_bb(captured_sq);
             board.pieces[(int)enemy][(int)Piece::Pawn] |= square_bb(captured_sq);
+            h ^= zobrist::pieces[(int)enemy][(int)Piece::Pawn][captured_sq];
         } else {
             board.pieces_on_square[to] = captured;
             board.occupied[(int)enemy] |= square_bb(to);
             board.pieces[(int)enemy][(int)captured] |= square_bb(to);
+            h ^= zobrist::pieces[(int)enemy][(int)captured][to];
         }
     }
 
@@ -395,7 +423,7 @@ void unmake_move(Board& board, const Move32& move) {
         if (to == G1) { rook_from = H1; rook_to = F1; }
         else if (to == C1) { rook_from = A1; rook_to = D1; }
         else if (to == G8) { rook_from = H8; rook_to = F8; }
-        else { rook_from = A8; rook_to = D8; }  // C8
+        else { rook_from = A8; rook_to = D8; }
 
         board.pieces_on_square[rook_from] = Piece::Rook;
         board.pieces_on_square[rook_to] = Piece::None;
@@ -403,10 +431,13 @@ void unmake_move(Board& board, const Move32& move) {
         board.occupied[(int)turn] &= ~square_bb(rook_to);
         board.pieces[(int)turn][(int)Piece::Rook] |= square_bb(rook_from);
         board.pieces[(int)turn][(int)Piece::Rook] &= ~square_bb(rook_to);
+        h ^= zobrist::pieces[(int)turn][(int)Piece::Rook][rook_from];
+        h ^= zobrist::pieces[(int)turn][(int)Piece::Rook][rook_to];
     }
 
     // Update all_occupied
     board.all_occupied = board.occupied[0] | board.occupied[1];
+    board.hash = h;
 }
 
 bool is_attacked(int square, Color attacker, const Board& board) {

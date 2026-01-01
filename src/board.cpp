@@ -1,4 +1,5 @@
 #include "board.hpp"
+#include "zobrist.hpp"
 #include <algorithm>
 #include <iostream>
 #include <sstream>
@@ -60,6 +61,9 @@ Board::Board(std::string_view fen) {
             ep_file = file;
         }
     }
+
+    // Compute initial Zobrist hash
+    hash = compute_hash(*this);
 }
 
 void Board::print() const {

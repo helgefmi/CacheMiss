@@ -6,7 +6,7 @@
 #include <iomanip>
 #include <iostream>
 
-void bench_perftsuite(const std::string& filename, int max_depth) {
+void bench_perftsuite(const std::string& filename, int max_depth, size_t mem_mb) {
     auto entries = parse_epd_file(filename);
 
     if (entries.empty()) {
@@ -14,11 +14,14 @@ void bench_perftsuite(const std::string& filename, int max_depth) {
         return;
     }
 
+    PerftTable tt(mem_mb);
+
     std::cout << "Running perft suite: " << filename << '\n';
     std::cout << "Positions: " << entries.size() << '\n';
     if (max_depth > 0) {
         std::cout << "Max depth: " << max_depth << '\n';
     }
+    std::cout << "Hash table: " << mem_mb << " MB\n";
     std::cout << '\n';
 
     int passed = 0;
@@ -43,7 +46,7 @@ void bench_perftsuite(const std::string& filename, int max_depth) {
             int depth = d + 1;
             u64 expected = entry.expected_nodes[d];
 
-            u64 nodes = perft(board, depth);
+            u64 nodes = perft(board, depth, &tt);
             total_nodes += nodes;
 
             auto now = std::chrono::steady_clock::now();
@@ -77,4 +80,11 @@ void bench_perftsuite(const std::string& filename, int max_depth) {
     std::cout << "Total nodes: " << total_nodes << '\n';
     std::cout << "Total time: " << total_us / 1000 << " ms\n";
     std::cout << "NPS: " << std::fixed << std::setprecision(2) << total_mnps << " Mnps\n";
+
+    u64 cache_hits = tt.get_hits();
+    u64 cache_misses = tt.get_misses();
+    u64 cache_total = cache_hits + cache_misses;
+    double hit_rate = cache_total > 0 ? (100.0 * cache_hits / cache_total) : 0.0;
+    std::cout << "Cache hits: " << cache_hits << ", misses: " << cache_misses
+              << " (" << std::fixed << std::setprecision(1) << hit_rate << "% hit rate)\n";
 }
