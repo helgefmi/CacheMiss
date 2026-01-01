@@ -8,7 +8,7 @@ Board::Board(std::string_view fen) {
     std::ranges::fill(pieces[0], Bitboard(0));
     std::ranges::fill(pieces[1], Bitboard(0));
     std::ranges::fill(occupied, Bitboard(0));
-    std::ranges::fill(pieces_on_square, std::nullopt);
+    std::ranges::fill(pieces_on_square, Piece::None);
     all_occupied = Bitboard(0);
     en_passant = Bitboard(0);
     castling = Bitboard(0);

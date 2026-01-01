@@ -49,4 +49,5 @@ struct Move32 {
     }
 };
 
+template <Color turn>
 std::vector<Move32> generate_moves(const Board& board);

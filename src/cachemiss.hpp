@@ -61,7 +61,7 @@ static void print_bitboard(Bitboard bb) {
 // Color
 //
 
-enum class Color : u8 { White = 0, Black = 1 };
+enum struct Color : u8 { White = 0, Black = 1 };
 
 constexpr Color opposite(Color c) {
     return (c == Color::White) ? Color::Black : Color::White;
@@ -75,7 +75,7 @@ constexpr char color_to_char(Color c) {
 // Piece
 //
 
-enum class Piece : u8 { Pawn = 0, Knight = 1, Bishop = 2, Rook = 3, Queen = 4, King = 5, None = 7 };
+enum struct Piece : u8 { Pawn = 0, Knight = 1, Bishop = 2, Rook = 3, Queen = 4, King = 5, None = 7 };
 constexpr char piece_to_char(Piece p) {
     switch (p) {
         case Piece::Pawn:   return 'P';

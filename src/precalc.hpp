@@ -28,9 +28,51 @@ constexpr std::array<std::array<Bitboard, 64>, 2> PAWN_ATTACKS = []{
     return attacks;
 }();
 
-constexpr std::array<std::array<Bitboard, 64>, 2> PAWN_MOVES = []{
+constexpr std::array<std::array<Bitboard, 64>, 2> PAWN_MOVES_ONE = []{
     std::array<std::array<Bitboard, 64>, 2> moves = {};
-    // not sure about this one yet
+    for (int sq = 0; sq < 64; ++sq) {
+        Bitboard white_bb = 0;
+        Bitboard black_bb = 0;
+        int rank = sq / 8;
+        int file = sq % 8;
+
+        // White pawn one square move
+        if (rank < 7) {
+            white_bb |= (1ull << ((rank + 1) * 8 + file));
+        }
+
+        // Black pawn one square move
+        if (rank > 0) {
+            black_bb |= (1ull << ((rank - 1) * 8 + file));
+        }
+
+        moves[0][sq] = white_bb;
+        moves[1][sq] = black_bb;
+    }
+    return moves;
+}();
+
+constexpr std::array<std::array<Bitboard, 64>, 2> PAWN_MOVES_TWO = []{
+    std::array<std::array<Bitboard, 64>, 2> moves = {};
+    for (int sq = 0; sq < 64; ++sq) {
+        Bitboard white_bb = 0;
+        Bitboard black_bb = 0;
+        int rank = sq / 8;
+        int file = sq % 8;
+
+        // White pawn two squares move
+        if (rank == 1) {
+            white_bb |= (1ull << ((rank + 2) * 8 + file));
+        }
+
+        // Black pawn two squares move
+        if (rank == 6) {
+            black_bb |= (1ull << ((rank - 2) * 8 + file));
+        }
+
+        moves[0][sq] = white_bb;
+        moves[1][sq] = black_bb;
+    }
     return moves;
 }();
 

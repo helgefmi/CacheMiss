@@ -1,10 +1,12 @@
 #include "board.hpp"
+#include "move.hpp"
 #include "precalc.hpp"
 #include <iostream>
 
 int main() {
     Board board;
-    board.print();
-    print_bitboard(KNIGHT_MOVES[36]); // Print knight moves from e5 (square 36)
+    for (auto move : generate_moves<Color::White>(board)) {
+        std::cout << move.to_string() << '\n';
+    }
     return 0;
 }

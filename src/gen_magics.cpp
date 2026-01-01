@@ -7,10 +7,9 @@
 using Bitboard = uint64_t;
 
 // Random number generator for magic candidates
-class Random {
+struct Random {
     std::mt19937_64 gen;
     std::uniform_int_distribution<uint64_t> dist;
-public:
     Random() : gen(std::random_device{}()), dist(0, UINT64_MAX) {}
 
     uint64_t sparse_rand() {
