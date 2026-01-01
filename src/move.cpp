@@ -55,10 +55,11 @@ inline bool is_attacked(int square, const Board& board) {
 constexpr int E1 = 4, G1 = 6, C1 = 2, F1 = 5, D1 = 3;
 constexpr int E8 = 60, G8 = 62, C8 = 58, F8 = 61, D8 = 59;
 
-constexpr Bitboard WHITE_OO_RIGHT  = 1ULL << 7;   // h1
-constexpr Bitboard WHITE_OOO_RIGHT = 1ULL << 0;   // a1
-constexpr Bitboard BLACK_OO_RIGHT  = 1ULL << 63;  // h8
-constexpr Bitboard BLACK_OOO_RIGHT = 1ULL << 56;  // a8
+// Castling rights: bit0=wQ, bit1=wK, bit2=bQ, bit3=bK
+constexpr u8 WHITE_OO_RIGHT  = 2;   // bit 1 (kingside)
+constexpr u8 WHITE_OOO_RIGHT = 1;   // bit 0 (queenside)
+constexpr u8 BLACK_OO_RIGHT  = 8;   // bit 3 (kingside)
+constexpr u8 BLACK_OOO_RIGHT = 4;   // bit 2 (queenside)
 
 constexpr Bitboard WHITE_OO_PATH  = (1ULL << F1) | (1ULL << G1);
 constexpr Bitboard WHITE_OOO_PATH = (1ULL << 1) | (1ULL << C1) | (1ULL << D1);  // b1, c1, d1
@@ -107,6 +108,10 @@ MoveList generate_moves(const Board& board) {
         }
     }
 
+    // Compute ep bitboard once for all pawns
+    constexpr int EP_RANK = (turn == Color::White) ? 5 : 2;  // rank 6 or 3 (0-indexed)
+    Bitboard ep_bb = (board.ep_file < 8) ? square_bb(EP_RANK * 8 + board.ep_file) : 0;
+
     // Normal pawns (no promotions possible)
     for (Bitboard bb = normal_pawns; bb; bb &= bb - 1) {
         int from_sq = lsb_index(bb);
@@ -126,10 +131,10 @@ MoveList generate_moves(const Board& board) {
         }
 
         // Captures (including en passant)
-        Bitboard captures = PAWN_ATTACKS[(int)turn][from_sq] & (enemy_occupied | board.en_passant);
+        Bitboard captures = PAWN_ATTACKS[(int)turn][from_sq] & (enemy_occupied | ep_bb);
         for (Bitboard cap_bb = captures; cap_bb; cap_bb &= cap_bb - 1) {
             int to_sq = lsb_index(cap_bb);
-            bool is_ep = square_bb(to_sq) & board.en_passant;
+            bool is_ep = square_bb(to_sq) & ep_bb;
             Piece captured_piece = is_ep ? Piece::Pawn : board.pieces_on_square[to_sq];
             Move32 m(from_sq, to_sq, Piece::None, captured_piece);
             if (is_ep) m.set_en_passant();
@@ -194,24 +199,24 @@ MoveList generate_moves(const Board& board) {
         // Castling
         constexpr Color enemy = (turn == Color::White) ? Color::Black : Color::White;
 
+        // Castling: check rights, path empty, king not in check, pass-through not attacked
+        // Destination check removed - handled by is_illegal() after make_move
         if constexpr (turn == Color::White) {
             if (from_sq == E1) {
-                // Kingside: rights + path empty + e1,f1,g1 not attacked
+                // Kingside: rights + path empty + e1,f1 not attacked
                 if ((board.castling & WHITE_OO_RIGHT) &&
                     !(board.all_occupied & WHITE_OO_PATH) &&
                     !is_attacked<enemy>(E1, board) &&
-                    !is_attacked<enemy>(F1, board) &&
-                    !is_attacked<enemy>(G1, board)) {
+                    !is_attacked<enemy>(F1, board)) {
                     Move32 m(E1, G1);
                     m.set_castling();
                     moves.add(m);
                 }
-                // Queenside: rights + path empty + e1,d1,c1 not attacked
+                // Queenside: rights + path empty + e1,d1 not attacked
                 if ((board.castling & WHITE_OOO_RIGHT) &&
                     !(board.all_occupied & WHITE_OOO_PATH) &&
                     !is_attacked<enemy>(E1, board) &&
-                    !is_attacked<enemy>(D1, board) &&
-                    !is_attacked<enemy>(C1, board)) {
+                    !is_attacked<enemy>(D1, board)) {
                     Move32 m(E1, C1);
                     m.set_castling();
                     moves.add(m);
@@ -219,22 +224,20 @@ MoveList generate_moves(const Board& board) {
             }
         } else {
             if (from_sq == E8) {
-                // Kingside
+                // Kingside: rights + path empty + e8,f8 not attacked
                 if ((board.castling & BLACK_OO_RIGHT) &&
                     !(board.all_occupied & BLACK_OO_PATH) &&
                     !is_attacked<enemy>(E8, board) &&
-                    !is_attacked<enemy>(F8, board) &&
-                    !is_attacked<enemy>(G8, board)) {
+                    !is_attacked<enemy>(F8, board)) {
                     Move32 m(E8, G8);
                     m.set_castling();
                     moves.add(m);
                 }
-                // Queenside
+                // Queenside: rights + path empty + e8,d8 not attacked
                 if ((board.castling & BLACK_OOO_RIGHT) &&
                     !(board.all_occupied & BLACK_OOO_PATH) &&
                     !is_attacked<enemy>(E8, board) &&
-                    !is_attacked<enemy>(D8, board) &&
-                    !is_attacked<enemy>(C8, board)) {
+                    !is_attacked<enemy>(D8, board)) {
                     Move32 m(E8, C8);
                     m.set_castling();
                     moves.add(m);
@@ -257,16 +260,17 @@ MoveList generate_moves(const Board& board) {
 // Castling rook squares
 constexpr int A1 = 0, H1 = 7, A8 = 56, H8 = 63;
 
-// Castling rights masks for each corner
-constexpr Bitboard CASTLING_MASK[64] = {
-    ~(1ULL << A1), ~0ULL, ~0ULL, ~0ULL, ~((1ULL << A1) | (1ULL << H1)), ~0ULL, ~0ULL, ~(1ULL << H1),  // rank 1
-    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
-    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
-    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
-    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
-    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
-    ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL, ~0ULL,
-    ~(1ULL << A8), ~0ULL, ~0ULL, ~0ULL, ~((1ULL << A8) | (1ULL << H8)), ~0ULL, ~0ULL, ~(1ULL << H8)   // rank 8
+// Castling rights masks: AND with these to clear rights when piece moves from/to square
+// bit0=wQ, bit1=wK, bit2=bQ, bit3=bK
+constexpr u8 CASTLING_MASK[64] = {
+    0xE, 0xF, 0xF, 0xF, 0xC, 0xF, 0xF, 0xD,  // rank 1: a1=~wQ, e1=~(wQ|wK), h1=~wK
+    0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF,
+    0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF,
+    0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF,
+    0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF,
+    0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF,
+    0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF,
+    0xB, 0xF, 0xF, 0xF, 0x3, 0xF, 0xF, 0x7   // rank 8: a8=~bQ, e8=~(bQ|bK), h8=~bK
 };
 
 void make_move(Board& board, Move32& move) {
@@ -280,13 +284,13 @@ void make_move(Board& board, Move32& move) {
     const Piece to_piece = promotion != Piece::None ? promotion : piece;
 
     // Save undo info
-    move.set_undo_info(board.castling, board.en_passant);
+    move.set_undo_info(board.castling, board.ep_file);
 
     // Flip turn
     board.turn = enemy;
 
     // Clear en passant (will be set below if this is a double pawn push)
-    board.en_passant = 0;
+    board.ep_file = 8;  // 8 = no en passant
 
     // Move the piece
     board.pieces_on_square[to] = to_piece;
@@ -336,10 +340,8 @@ void make_move(Board& board, Move32& move) {
     // Set en passant target if double pawn push
     if (piece == Piece::Pawn) {
         int diff = to - from;
-        if (diff == 16) {  // White double push
-            board.en_passant = square_bb(from + 8);
-        } else if (diff == -16) {  // Black double push
-            board.en_passant = square_bb(from - 8);
+        if (diff == 16 || diff == -16) {  // Double push
+            board.ep_file = from % 8;  // Store just the file
         }
     }
 }
@@ -356,8 +358,8 @@ void unmake_move(Board& board, const Move32& move) {
     const Color enemy = opposite(turn);
 
     // Restore castling rights and en passant
-    board.castling = move.prev_castling_bb();
-    board.en_passant = move.prev_ep_bb();
+    board.castling = move.prev_castling();
+    board.ep_file = move.prev_ep_file();
 
     // Determine original piece (pawn if this was a promotion)
     const Piece to_piece = board.pieces_on_square[to];

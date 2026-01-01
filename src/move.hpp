@@ -9,11 +9,11 @@
 // Bits 6-11:  To square (0-63)
 // Bits 12-14: Promotion piece (0-5 for Pawn, Knight, Bishop, Rook, Queen, King; 7 for no promotion)
 // Bits 15-17: Captured piece (0-5 for Pawn, Knight, Bishop, Rook, Queen, King; 7 for no capture)
-// Bits 18-21: Previous castling rights (4 bits, stored by make_move for unmake)
-// Bits 22-27: Previous en passant square (6 bits, 63 = none, stored by make_move)
-// Bit 28:     Is en passant capture (set by generate_moves)
-// Bit 29:     Is castling move (set by generate_moves)
-// Bits 30-31: Unused
+// Bits 18-21: Previous castling rights (4 bits: bit0=wQ, bit1=wK, bit2=bQ, bit3=bK)
+// Bits 22-25: Previous en passant file (4 bits, 0-7 = file, 8+ = none)
+// Bit 26:     Is en passant capture (set by generate_moves)
+// Bit 27:     Is castling move (set by generate_moves)
+// Bits 28-31: Unused
 struct Move32 {
     u32 data;
 
@@ -33,34 +33,18 @@ struct Move32 {
 
     constexpr bool is_capture() const { return captured() != Piece::None; }
     constexpr bool is_promotion() const { return promotion() != Piece::None; }
-    constexpr bool is_en_passant() const { return (data >> 28) & 1; }
-    constexpr bool is_castling() const { return (data >> 29) & 1; }
+    constexpr bool is_en_passant() const { return (data >> 26) & 1; }
+    constexpr bool is_castling() const { return (data >> 27) & 1; }
 
-    constexpr void set_en_passant() { data |= (1u << 28); }
-    constexpr void set_castling() { data |= (1u << 29); }
+    constexpr void set_en_passant() { data |= (1u << 26); }
+    constexpr void set_castling() { data |= (1u << 27); }
 
     // Undo info stored by make_move, read by unmake_move
-    constexpr int prev_castling() const { return (data >> 18) & 0xF; }
-    constexpr int prev_ep_square() const { return (data >> 22) & 0x3F; }
-    constexpr void set_undo_info(Bitboard castling, Bitboard ep) {
-        // Convert castling bitboard to 4-bit value (a1=bit0, h1=bit1, a8=bit2, h8=bit3)
-        int castling_bits = ((castling & 1) ? 1 : 0)           // a1
-                          | ((castling & (1ULL << 7)) ? 2 : 0)  // h1
-                          | ((castling & (1ULL << 56)) ? 4 : 0) // a8
-                          | ((castling & (1ULL << 63)) ? 8 : 0); // h8
-        int ep_sq = ep ? lsb_index(ep) : 63;
-        data = (data & 0x3003FFFF) | (castling_bits << 18) | (ep_sq << 22);
-    }
-    constexpr Bitboard prev_castling_bb() const {
-        int bits = prev_castling();
-        return ((bits & 1) ? 1ULL : 0)
-             | ((bits & 2) ? (1ULL << 7) : 0)
-             | ((bits & 4) ? (1ULL << 56) : 0)
-             | ((bits & 8) ? (1ULL << 63) : 0);
-    }
-    constexpr Bitboard prev_ep_bb() const {
-        int sq = prev_ep_square();
-        return (sq == 63) ? 0 : (1ULL << sq);
+    constexpr u8 prev_castling() const { return (data >> 18) & 0xF; }
+    constexpr u8 prev_ep_file() const { return (data >> 22) & 0xF; }
+    constexpr void set_undo_info(u8 castling, u8 ep_file) {
+        // Direct storage - no conversion needed
+        data = (data & 0xFC03FFFF) | (castling << 18) | (ep_file << 22);
     }
 
     std::string to_string() const {

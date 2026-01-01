@@ -15,8 +15,19 @@ u64 perft(Board& board, int depth) {
     if (depth == 0) return 1;
 
     auto moves = generate_moves(board);
-    u64 nodes = 0;
 
+    // Bulk counting at depth 1: just count legal moves, no recursion
+    if (depth == 1) {
+        u64 count = 0;
+        for (auto& move : moves) {
+            make_move(board, move);
+            if (!is_illegal(board)) count++;
+            unmake_move(board, move);
+        }
+        return count;
+    }
+
+    u64 nodes = 0;
     for (auto& move : moves) {
         make_move(board, move);
         if (!is_illegal(board)) {

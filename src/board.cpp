@@ -10,8 +10,8 @@ Board::Board(std::string_view fen) {
     std::ranges::fill(occupied, Bitboard(0));
     std::ranges::fill(pieces_on_square, Piece::None);
     all_occupied = Bitboard(0);
-    en_passant = Bitboard(0);
-    castling = Bitboard(0);
+    ep_file = 8;  // 8 = no en passant
+    castling = 0;
 
     std::istringstream ss(fen.data());
     std::string position, active_color, castling_str, en_passant_str;
@@ -42,23 +42,22 @@ Board::Board(std::string_view fen) {
     // Parse active color
     turn = (active_color == "b") ? Color::Black : Color::White;
 
-    // Parse castling rights (stored as corner square bitboard)
+    // Parse castling rights (compact: bit0=wQ, bit1=wK, bit2=bQ, bit3=bK)
     for (char c : castling_str) {
         switch (c) {
-            case 'K': castling |= square_bb(7);  break;  // h1
-            case 'Q': castling |= square_bb(0);  break;  // a1
-            case 'k': castling |= square_bb(63); break;  // h8
-            case 'q': castling |= square_bb(56); break;  // a8
+            case 'K': castling |= 2; break;  // bit 1
+            case 'Q': castling |= 1; break;  // bit 0
+            case 'k': castling |= 8; break;  // bit 3
+            case 'q': castling |= 4; break;  // bit 2
             default: break;
         }
     }
 
-    // Parse en passant square
+    // Parse en passant file (rank is always 3 for white target, 6 for black target)
     if (en_passant_str != "-" && en_passant_str.size() >= 2) {
-        int ep_file = en_passant_str[0] - 'a';
-        int ep_rank = en_passant_str[1] - '1';
-        if (ep_file >= 0 && ep_file < 8 && ep_rank >= 0 && ep_rank < 8) {
-            en_passant = square_bb(square_from_coords(ep_file, ep_rank));
+        int file = en_passant_str[0] - 'a';
+        if (file >= 0 && file < 8) {
+            ep_file = file;
         }
     }
 }
@@ -95,18 +94,18 @@ void Board::print() const {
     std::cout << "Castling: ";
     if (castling == 0) std::cout << "-";
     else {
-        if (castling & square_bb(7))  std::cout << 'K';
-        if (castling & square_bb(0))  std::cout << 'Q';
-        if (castling & square_bb(63)) std::cout << 'k';
-        if (castling & square_bb(56)) std::cout << 'q';
+        if (castling & 2) std::cout << 'K';  // bit 1
+        if (castling & 1) std::cout << 'Q';  // bit 0
+        if (castling & 8) std::cout << 'k';  // bit 3
+        if (castling & 4) std::cout << 'q';  // bit 2
     }
     std::cout << '\n';
 
     std::cout << "En passant: ";
-    if (en_passant == 0) std::cout << "-";
+    if (ep_file > 7) std::cout << "-";
     else {
-        int sq = lsb_index(en_passant);
-        std::cout << char('a' + sq % 8) << char('1' + sq / 8);
+        int rank = (turn == Color::White) ? 5 : 2;  // rank 6 or 3 (0-indexed: 5 or 2)
+        std::cout << char('a' + ep_file) << char('1' + rank);
     }
     std::cout << "\n\n";
 }
