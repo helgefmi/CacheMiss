@@ -4,13 +4,17 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <mutex>
+#include <queue>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -67,6 +71,12 @@ public:
         send("uci");
         wait_for("uciok");
 
+        send("isready");
+        wait_for("readyok");
+    }
+
+    void set_hash(int mb) {
+        send("setoption name Hash value " + std::to_string(mb));
         send("isready");
         wait_for("readyok");
     }
@@ -334,6 +344,119 @@ std::vector<std::string> parse_epd_file(const std::string& filename) {
     return positions;
 }
 
+// Game task for work queue
+struct GameTask {
+    std::string fen;
+    bool engine1_is_white;
+    int game_id;  // For ordering output
+};
+
+// Thread-safe work queue
+class WorkQueue {
+    std::queue<GameTask> tasks;
+    std::mutex mtx;
+
+public:
+    void push(GameTask task) {
+        std::lock_guard<std::mutex> lock(mtx);
+        tasks.push(std::move(task));
+    }
+
+    bool pop(GameTask& task) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (tasks.empty()) return false;
+        task = std::move(tasks.front());
+        tasks.pop();
+        return true;
+    }
+
+    size_t size() {
+        std::lock_guard<std::mutex> lock(mtx);
+        return tasks.size();
+    }
+};
+
+// Game result for reporting
+struct GameReport {
+    int game_id;
+    GameOutcome outcome;
+    bool engine1_is_white;
+    std::string fen;
+};
+
+// Thread-safe results collector
+class ResultsCollector {
+    std::vector<GameReport> results;
+    std::mutex mtx;
+    std::atomic<int> completed{0};
+    int total_games;
+
+public:
+    ResultsCollector(int total) : total_games(total) {}
+
+    void add(GameReport report) {
+        std::lock_guard<std::mutex> lock(mtx);
+        results.push_back(std::move(report));
+        completed++;
+    }
+
+    int get_completed() const { return completed.load(); }
+    int get_total() const { return total_games; }
+
+    std::vector<GameReport> get_results() {
+        std::lock_guard<std::mutex> lock(mtx);
+        return results;
+    }
+};
+
+// Worker thread function
+void worker_thread(
+    int thread_id,
+    const std::string& engine1_path,
+    const std::string& engine2_path,
+    int movetime_ms,
+    int hash_mb,
+    WorkQueue& work_queue,
+    ResultsCollector& results,
+    bool quiet
+) {
+    try {
+        // Each thread has its own engine instances
+        Engine engine1(engine1_path);
+        Engine engine2(engine2_path);
+
+        // Configure hash table size
+        if (hash_mb > 0) {
+            engine1.set_hash(hash_mb);
+            engine2.set_hash(hash_mb);
+        }
+
+        GameTask task;
+        while (work_queue.pop(task)) {
+            Engine& white = task.engine1_is_white ? engine1 : engine2;
+            Engine& black = task.engine1_is_white ? engine2 : engine1;
+
+            GameOutcome outcome = play_game(white, black, task.fen, movetime_ms);
+
+            GameReport report;
+            report.game_id = task.game_id;
+            report.outcome = outcome;
+            report.engine1_is_white = task.engine1_is_white;
+            report.fen = task.fen;
+
+            results.add(std::move(report));
+
+            if (!quiet) {
+                int done = results.get_completed();
+                int total = results.get_total();
+                std::cerr << "\rProgress: " << done << "/" << total << " games completed" << std::flush;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "\nThread " << thread_id << " error: " << e.what() << std::endl;
+    }
+}
+
 void print_usage(const char* prog) {
     std::cerr << "Usage: " << prog << " <engine1> <engine2> [options]\n"
               << "Options:\n"
@@ -341,6 +464,8 @@ void print_usage(const char* prog) {
               << "  -epd <file>      EPD file with starting positions\n"
               << "  -fen <string>    Single starting position\n"
               << "  -games <n>       Games per position (default: 2)\n"
+              << "  -threads <n>     Number of concurrent games (default: CPU count)\n"
+              << "  -hash <mb>       Hash table size per engine (default: 512)\n"
               << "  -quiet           Only show final score\n";
 }
 
@@ -358,6 +483,8 @@ int main(int argc, char* argv[]) {
     std::string epd_file;
     std::string fen;
     int games_per_position = 2;
+    int num_threads = std::thread::hardware_concurrency();
+    int hash_mb = 512;
     bool quiet = false;
 
     for (int i = 3; i < argc; ++i) {
@@ -369,6 +496,10 @@ int main(int argc, char* argv[]) {
             fen = argv[++i];
         } else if (strcmp(argv[i], "-games") == 0 && i + 1 < argc) {
             games_per_position = std::stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-threads") == 0 && i + 1 < argc) {
+            num_threads = std::stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-hash") == 0 && i + 1 < argc) {
+            hash_mb = std::stoi(argv[++i]);
         } else if (strcmp(argv[i], "-quiet") == 0) {
             quiet = true;
         } else {
@@ -377,6 +508,8 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    if (num_threads < 1) num_threads = 1;
 
     // Collect positions
     std::vector<std::string> positions;
@@ -394,96 +527,96 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Start engines
-    std::cout << "Starting engines..." << std::endl;
-    Engine engine1(engine1_path);
-    Engine engine2(engine2_path);
-    std::cout << "Engines ready.\n" << std::endl;
+    // Build work queue with all games
+    WorkQueue work_queue;
+    int game_id = 0;
+    for (const auto& start_fen : positions) {
+        for (int game = 0; game < games_per_position; ++game) {
+            GameTask task;
+            task.fen = start_fen;
+            task.engine1_is_white = (game % 2 == 0);
+            task.game_id = game_id++;
+            work_queue.push(std::move(task));
+        }
+    }
 
-    // Score tracking
+    int total_games = game_id;
+    ResultsCollector results(total_games);
+
+    std::cout << "Playing " << total_games << " games across " << num_threads << " threads" << std::endl;
+    std::cout << "Engines: " << engine1_path << " vs " << engine2_path << std::endl;
+    std::cout << "Time per move: " << movetime_ms << "ms, Hash: " << hash_mb << "MB per engine" << std::endl;
+    std::cout << std::endl;
+
+    // Spawn worker threads
+    auto start_time = std::chrono::steady_clock::now();
+    std::vector<std::thread> threads;
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back(worker_thread, i, engine1_path, engine2_path,
+                            movetime_ms, hash_mb, std::ref(work_queue), std::ref(results), quiet);
+    }
+
+    // Wait for all threads to complete
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    auto end_time = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
+
+    if (!quiet) {
+        std::cerr << std::endl;  // Clear progress line
+    }
+
+    // Aggregate results
+    auto all_results = results.get_results();
+
+    // Sort by game_id for consistent output
+    std::sort(all_results.begin(), all_results.end(),
+              [](const GameReport& a, const GameReport& b) { return a.game_id < b.game_id; });
+
     double score1 = 0, score2 = 0;
-    int total_games = 0;
+    int wins1 = 0, wins2 = 0, draws = 0;
 
-    // Play matches
-    for (size_t pos_idx = 0; pos_idx < positions.size(); ++pos_idx) {
-        const std::string& start_fen = positions[pos_idx];
+    for (const auto& report : all_results) {
+        double white_score = 0, black_score = 0;
 
-        if (!quiet) {
-            std::cout << "Position " << (pos_idx + 1) << "/" << positions.size()
-                      << ": " << start_fen << std::endl;
+        switch (report.outcome.result) {
+            case GameResult::WhiteWin:
+                white_score = 1.0;
+                if (report.engine1_is_white) wins1++; else wins2++;
+                break;
+            case GameResult::BlackWin:
+                black_score = 1.0;
+                if (report.engine1_is_white) wins2++; else wins1++;
+                break;
+            case GameResult::Draw:
+                white_score = black_score = 0.5;
+                draws++;
+                break;
         }
 
-        for (int game = 0; game < games_per_position; ++game) {
-            // Alternate colors
-            bool engine1_white = (game % 2 == 0);
-            Engine& white = engine1_white ? engine1 : engine2;
-            Engine& black = engine1_white ? engine2 : engine1;
-
-            GameOutcome outcome = play_game(white, black, start_fen, movetime_ms);
-            total_games++;
-
-            // Update scores
-            double white_score = 0, black_score = 0;
-            std::string result_str;
-
-            switch (outcome.result) {
-                case GameResult::WhiteWin:
-                    white_score = 1.0;
-                    result_str = "1-0";
-                    break;
-                case GameResult::BlackWin:
-                    black_score = 1.0;
-                    result_str = "0-1";
-                    break;
-                case GameResult::Draw:
-                    white_score = black_score = 0.5;
-                    result_str = "1/2-1/2";
-                    break;
-            }
-
-            if (engine1_white) {
-                score1 += white_score;
-                score2 += black_score;
-            } else {
-                score1 += black_score;
-                score2 += white_score;
-            }
-
-            if (!quiet) {
-                std::string reason;
-                switch (outcome.draw_reason) {
-                    case DrawReason::FiftyMove: reason = "50-move"; break;
-                    case DrawReason::Repetition: reason = "repetition"; break;
-                    case DrawReason::Stalemate: reason = "stalemate"; break;
-                    case DrawReason::InsufficientMaterial: reason = "insufficient"; break;
-                    default:
-                        if (outcome.result == GameResult::WhiteWin ||
-                            outcome.result == GameResult::BlackWin) {
-                            reason = "checkmate";
-                        }
-                        break;
-                }
-
-                std::cout << "  Game " << (game + 1) << ": "
-                          << (engine1_white ? engine1_path : engine2_path) << " (W) vs "
-                          << (engine1_white ? engine2_path : engine1_path) << " (B) - "
-                          << result_str;
-                if (!reason.empty()) {
-                    std::cout << " (" << reason << ", " << outcome.num_moves << " moves)";
-                }
-                std::cout << std::endl;
-            }
+        if (report.engine1_is_white) {
+            score1 += white_score;
+            score2 += black_score;
+        } else {
+            score1 += black_score;
+            score2 += white_score;
         }
     }
 
     // Print final score
-    std::cout << "\nFinal Score (" << total_games << " games):" << std::endl;
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "Final Score (" << total_games << " games in " << elapsed << "s):" << std::endl;
+    std::cout << "========================================" << std::endl;
+
     double pct1 = (total_games > 0) ? (100.0 * score1 / total_games) : 0;
     double pct2 = (total_games > 0) ? (100.0 * score2 / total_games) : 0;
-    std::cout << "  " << engine1_path << ": " << score1 << " / " << total_games
-              << " (" << pct1 << "%)" << std::endl;
-    std::cout << "  " << engine2_path << ": " << score2 << " / " << total_games
-              << " (" << pct2 << "%)" << std::endl;
+
+    std::cout << "  " << engine1_path << ": " << score1 << "/" << total_games
+              << " (" << pct1 << "%) [W:" << wins1 << " D:" << draws << " L:" << wins2 << "]" << std::endl;
+    std::cout << "  " << engine2_path << ": " << score2 << "/" << total_games
+              << " (" << pct2 << "%) [W:" << wins2 << " D:" << draws << " L:" << wins1 << "]" << std::endl;
 
     return 0;
 }
