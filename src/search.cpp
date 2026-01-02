@@ -54,7 +54,7 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
     // Try TT move first if available
     if (tt_move.data != 0) {
         for (int i = 0; i < moves.size; ++i) {
-            if (moves[i].data == tt_move.data) {
+            if (moves[i].same_move(tt_move)) {
                 // Swap to front
                 Move32 tmp = moves[0];
                 moves[0] = moves[i];
@@ -127,10 +127,8 @@ static std::pair<Move32, int> search_root(Board& board, TTable& tt, int depth) {
 
     if (tt_move.data != 0) {
         for (int i = 0; i < moves.size; ++i) {
-            if (moves[i].data == tt_move.data) {
-                Move32 tmp = moves[0];
-                moves[0] = moves[i];
-                moves[i] = tmp;
+            if (moves[i].same_move(tt_move)) {
+                std::swap(moves[0], moves[i]);
                 break;
             }
         }
@@ -190,7 +188,12 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
         auto [move, score] = search_root(board, tt, depth);
 
         if (stop_search) {
-            // Use result from previous complete iteration
+            // If we completed searching at least the first move (the TT/best move from
+            // previous iteration), use that information rather than discarding it
+            if (move.data != 0) {
+                result.best_move = move;
+                result.score = score;
+            }
             break;
         }
 

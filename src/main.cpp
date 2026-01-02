@@ -17,6 +17,7 @@ void print_usage(const char* prog) {
               << "  -search [time]  Search for best move (time in ms, default: 10000)\n"
               << "  -bench-perftsuite <file> [max_depth]  Run perft test suite\n"
               << "  -bench-wac <file> [time_ms]  Run WAC test suite (default: 1000ms per position)\n"
+              << "  -wac-id <id>     Filter WAC suite to single position (e.g., \"WAC.007\")\n"
               << "  -mem <mb>       Hash table size in MB (default: 512)\n";
 }
 
@@ -31,6 +32,7 @@ int main(int argc, char* argv[]) {
     int perftsuite_max_depth = 0;
     std::string wac_file;
     int wac_time_ms = 1000;
+    std::string wac_id;
     size_t mem_mb = 512;
 
     for (int i = 1; i < argc; i++) {
@@ -57,6 +59,8 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
                 wac_time_ms = std::stoi(argv[++i]);
             }
+        } else if (strcmp(argv[i], "-wac-id") == 0 && i + 1 < argc) {
+            wac_id = argv[++i];
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -73,7 +77,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (!wac_file.empty()) {
-        bench_wac(wac_file, wac_time_ms, mem_mb);
+        bench_wac(wac_file, wac_time_ms, mem_mb, wac_id);
         return 0;
     }
 

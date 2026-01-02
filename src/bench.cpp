@@ -101,12 +101,23 @@ void bench_perftsuite(const std::string& filename, int max_depth, size_t mem_mb)
               << " (" << std::fixed << std::setprecision(1) << hit_rate << "% hit rate)\n";
 }
 
-void bench_wac(const std::string& filename, int time_limit_ms, size_t mem_mb) {
+void bench_wac(const std::string& filename, int time_limit_ms, size_t mem_mb, const std::string& filter_id) {
     auto entries = parse_wac_file(filename);
 
     if (entries.empty()) {
         std::cerr << "Failed to open or parse: " << filename << '\n';
         return;
+    }
+
+    // Filter by ID if specified
+    if (!filter_id.empty()) {
+        auto it = std::find_if(entries.begin(), entries.end(),
+            [&filter_id](const WACEntry& e) { return e.id == filter_id; });
+        if (it == entries.end()) {
+            std::cerr << "ID not found: " << filter_id << '\n';
+            return;
+        }
+        entries = {*it};
     }
 
     TTable tt(mem_mb);

@@ -33,6 +33,12 @@ struct Move32 {
 
     constexpr bool is_capture() const { return captured() != Piece::None; }
     constexpr bool is_promotion() const { return promotion() != Piece::None; }
+
+    // Compare move identity (from, to, promotion) - ignores undo info
+    constexpr bool same_move(const Move32& other) const {
+        constexpr u32 MOVE_MASK = 0x7FFF;  // bits 0-14
+        return (data & MOVE_MASK) == (other.data & MOVE_MASK);
+    }
     constexpr bool is_en_passant() const { return (data >> 26) & 1; }
     constexpr bool is_castling() const { return (data >> 27) & 1; }
 
