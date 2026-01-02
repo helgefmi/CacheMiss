@@ -64,6 +64,10 @@ target_link_libraries(cachemiss cachemiss_core)
 add_executable(match tools/match.cpp)
 target_link_libraries(match cachemiss_core)
 
+# PGN to EPD converter tool
+add_executable(pgn2epd tools/pgn2epd.cpp)
+target_link_libraries(pgn2epd cachemiss_core)
+
 # Magic bitboard generator (standalone tool)
 add_executable(gen_magics src/gen_magics.cpp)
 target_include_directories(gen_magics PRIVATE src)
