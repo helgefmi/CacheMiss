@@ -29,10 +29,6 @@ bool PerftTable::probe(u64 hash, int depth, u64& nodes) const {
 
 void PerftTable::store(u64 hash, int depth, u64 nodes) {
     PerftEntry& entry = table[hash & mask];
-    if (entry.hash == hash && entry.depth >= depth) {
-        // Existing entry is deeper or equal depth; do not overwrite
-        return;
-    }
     entry.hash = hash;
     entry.nodes = nodes;
     entry.depth = static_cast<u8>(depth);
@@ -50,28 +46,12 @@ static bool is_illegal(const Board& board) {
 u64 perft(Board& board, int depth, PerftTable* tt) {
     if (depth == 0) return 1;
 
-    // Try TT lookup (skip at depth 1 for bulk counting efficiency)
-    if (depth > 1) {
-        u64 nodes;
-        if (tt->probe(board.hash, depth, nodes)) {
-            return nodes;
-        }
+    u64 nodes = 0;
+    if (tt->probe(board.hash, depth, nodes)) {
+        return nodes;
     }
 
     auto moves = generate_moves(board);
-
-    // Bulk counting at depth 1: just count legal moves, no recursion
-    if (depth == 1) {
-        u64 count = 0;
-        for (auto& move : moves) {
-            make_move(board, move);
-            if (!is_illegal(board)) count++;
-            unmake_move(board, move);
-        }
-        return count;
-    }
-
-    u64 nodes = 0;
     for (auto& move : moves) {
         make_move(board, move);
         if (!is_illegal(board)) {

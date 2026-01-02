@@ -24,32 +24,15 @@ inline Bitboard get_queen_attacks(int square, Bitboard occupancy) {
 // Check if a square is attacked by the given color (super-piece approach)
 template <Color attacker>
 inline bool is_attacked(int square, const Board& board) {
-    // Non-sliding pieces
-    if (KNIGHT_MOVES[square] & board.pieces[(int)attacker][(int)Piece::Knight])
-        return true;
-
-    if (KING_MOVES[square] & board.pieces[(int)attacker][(int)Piece::King])
-        return true;
-
-    // Pawns - use opposite color's attack pattern
     constexpr Color defender = (attacker == Color::White) ? Color::Black : Color::White;
-    if (PAWN_ATTACKS[(int)defender][square] & board.pieces[(int)attacker][(int)Piece::Pawn])
-        return true;
-
-    // Sliding pieces
     Bitboard occ = board.all_occupied;
-
-    if (get_rook_attacks(square, occ) &
-        (board.pieces[(int)attacker][(int)Piece::Rook] |
-         board.pieces[(int)attacker][(int)Piece::Queen]))
-        return true;
-
-    if (get_bishop_attacks(square, occ) &
-        (board.pieces[(int)attacker][(int)Piece::Bishop] |
-         board.pieces[(int)attacker][(int)Piece::Queen]))
-        return true;
-
-    return false;
+    return (
+        (KNIGHT_MOVES[square] & board.pieces[(int)attacker][(int)Piece::Knight]) |
+        (KING_MOVES[square] & board.pieces[(int)attacker][(int)Piece::King]) |
+        (PAWN_ATTACKS[(int)defender][square] & board.pieces[(int)attacker][(int)Piece::Pawn]) |
+        (get_rook_attacks(square, occ) & (board.pieces[(int)attacker][(int)Piece::Rook] | board.pieces[(int)attacker][(int)Piece::Queen])) |
+        (get_bishop_attacks(square, occ) & (board.pieces[(int)attacker][(int)Piece::Bishop] | board.pieces[(int)attacker][(int)Piece::Queen]))
+    );
 }
 
 // Castling constants
