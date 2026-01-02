@@ -55,7 +55,14 @@ struct Move32 {
 
     // Convert move to Standard Algebraic Notation (SAN)
     std::string to_string(const Board& board) const;
+
+    // Convert move to UCI format (e.g., "e2e4", "e7e8q")
+    std::string to_uci() const;
 };
+
+// Parse a UCI move string (e.g., "e2e4", "e7e8q") and find matching legal move
+// Returns Move32 with data=0 if invalid
+Move32 parse_uci_move(const std::string& uci, Board& board);
 
 struct MoveList {
     static constexpr int MAX_MOVES = 256;

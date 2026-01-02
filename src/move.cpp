@@ -269,7 +269,16 @@ void make_move(Board& board, Move32& move) {
 
     // Save undo info
     move.set_undo_info(board.castling, board.ep_file);
-    board.hash_stack[board.hash_sp++] = board.hash;
+    board.hash_stack[board.hash_sp] = board.hash;
+    board.halfmove_stack[board.hash_sp] = board.halfmove_clock;
+    board.hash_sp++;
+
+    // Update halfmove clock (reset on pawn move or capture, otherwise increment)
+    if (piece == Piece::Pawn || captured != Piece::None) {
+        board.halfmove_clock = 0;
+    } else {
+        board.halfmove_clock++;
+    }
 
     // Flip turn
     u64 h = board.hash ^ zobrist::side_to_move;
@@ -407,9 +416,11 @@ void unmake_move(Board& board, const Move32& move) {
         board.pieces[(int)turn][(int)Piece::Rook] &= ~square_bb(rook_to);
     }
 
-    // Update all_occupied and restore hash directly from stack
+    // Update all_occupied and restore hash/halfmove from stack
     board.all_occupied = board.occupied[0] | board.occupied[1];
-    board.hash = board.hash_stack[--board.hash_sp];
+    --board.hash_sp;
+    board.hash = board.hash_stack[board.hash_sp];
+    board.halfmove_clock = board.halfmove_stack[board.hash_sp];
 }
 
 bool is_attacked(int square, Color attacker, const Board& board) {
@@ -424,6 +435,70 @@ bool is_illegal(const Board& board) {
     Color them = board.turn;  // Side to move next
     Color us = opposite(them);  // Side that just moved
     return is_attacked(board.king_sq[(int)us], them, board);
+}
+
+std::string Move32::to_uci() const {
+    int from_sq = from();
+    int to_sq = to();
+
+    std::string uci;
+    uci += 'a' + (from_sq % 8);
+    uci += '1' + (from_sq / 8);
+    uci += 'a' + (to_sq % 8);
+    uci += '1' + (to_sq / 8);
+
+    if (is_promotion()) {
+        // UCI uses lowercase for promotion piece
+        char promo = piece_to_char(promotion());
+        uci += (promo >= 'A' && promo <= 'Z') ? (promo + 32) : promo;
+    }
+
+    return uci;
+}
+
+Move32 parse_uci_move(const std::string& uci, Board& board) {
+    if (uci.length() < 4) return Move32(0);
+
+    int from_file = uci[0] - 'a';
+    int from_rank = uci[1] - '1';
+    int to_file = uci[2] - 'a';
+    int to_rank = uci[3] - '1';
+
+    if (from_file < 0 || from_file > 7 || from_rank < 0 || from_rank > 7 ||
+        to_file < 0 || to_file > 7 || to_rank < 0 || to_rank > 7) {
+        return Move32(0);
+    }
+
+    int from_sq = from_rank * 8 + from_file;
+    int to_sq = to_rank * 8 + to_file;
+
+    Piece promo = Piece::None;
+    if (uci.length() >= 5) {
+        switch (uci[4]) {
+            case 'q': promo = Piece::Queen; break;
+            case 'r': promo = Piece::Rook; break;
+            case 'b': promo = Piece::Bishop; break;
+            case 'n': promo = Piece::Knight; break;
+        }
+    }
+
+    // Generate legal moves and find matching one
+    MoveList moves = generate_moves(board);
+    for (int i = 0; i < moves.size; ++i) {
+        Move32& m = moves[i];
+        if (m.from() == from_sq && m.to() == to_sq) {
+            // For promotions, also match the promotion piece
+            if (promo != Piece::None) {
+                if (m.promotion() == promo) {
+                    return m;
+                }
+            } else if (!m.is_promotion()) {
+                return m;
+            }
+        }
+    }
+
+    return Move32(0);
 }
 
 std::string Move32::to_string(const Board& board) const {

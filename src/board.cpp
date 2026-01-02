@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iostream>
 #include <sstream>
+#include <string>
 
 Board::Board(std::string_view fen) {
     // Initialize all bitboards to zero
@@ -13,11 +14,14 @@ Board::Board(std::string_view fen) {
     all_occupied = Bitboard(0);
     ep_file = 8;  // 8 = no en passant
     castling = 0;
+    halfmove_clock = 0;
     king_sq = {-1, -1};
 
     std::istringstream ss(fen.data());
     std::string position, active_color, castling_str, en_passant_str;
-    ss >> position >> active_color >> castling_str >> en_passant_str;
+    int halfmove = 0, fullmove = 1;
+    ss >> position >> active_color >> castling_str >> en_passant_str >> halfmove >> fullmove;
+    halfmove_clock = static_cast<u8>(halfmove);
 
     // Parse piece positions (FEN starts at rank 8, file a)
     int rank = 7, file = 0;
@@ -116,4 +120,65 @@ void Board::print() const {
         std::cout << char('a' + ep_file) << char('1' + rank);
     }
     std::cout << "\n\n";
+}
+
+std::string Board::to_fen() const {
+    std::string fen;
+
+    // Piece placement
+    for (int rank = 7; rank >= 0; --rank) {
+        int empty_count = 0;
+        for (int file = 0; file < 8; ++file) {
+            int sq = rank * 8 + file;
+            Piece p = pieces_on_square[sq];
+            if (p == Piece::None) {
+                empty_count++;
+            } else {
+                if (empty_count > 0) {
+                    fen += char('0' + empty_count);
+                    empty_count = 0;
+                }
+                // Determine color
+                bool is_white = occupied[0] & square_bb(sq);
+                char c = piece_to_char(p);
+                fen += is_white ? c : char(c + 32);  // lowercase for black
+            }
+        }
+        if (empty_count > 0) {
+            fen += char('0' + empty_count);
+        }
+        if (rank > 0) fen += '/';
+    }
+
+    // Active color
+    fen += ' ';
+    fen += (turn == Color::White) ? 'w' : 'b';
+
+    // Castling rights
+    fen += ' ';
+    if (castling == 0) {
+        fen += '-';
+    } else {
+        if (castling & 2) fen += 'K';
+        if (castling & 1) fen += 'Q';
+        if (castling & 8) fen += 'k';
+        if (castling & 4) fen += 'q';
+    }
+
+    // En passant
+    fen += ' ';
+    if (ep_file > 7) {
+        fen += '-';
+    } else {
+        int ep_rank = (turn == Color::White) ? 5 : 2;
+        fen += char('a' + ep_file);
+        fen += char('1' + ep_rank);
+    }
+
+    // Halfmove clock and fullmove number
+    fen += ' ';
+    fen += std::to_string(halfmove_clock);
+    fen += " 1";  // Fullmove number (we don't track this)
+
+    return fen;
 }

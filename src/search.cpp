@@ -2,7 +2,6 @@
 #include "eval.hpp"
 #include <chrono>
 #include <iostream>
-#include <iomanip>
 
 // Constants
 constexpr int INFINITY_SCORE = 30000;
@@ -206,19 +205,11 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
         auto now = std::chrono::steady_clock::now();
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
 
-        const auto& tt_stats = tt.get_stats();
-        u64 tt_total = tt_stats.hits + tt_stats.misses;
-        double hit_rate = tt_total > 0 ? (100.0 * tt_stats.hits / tt_total) : 0.0;
-
         std::cout << "info depth " << depth
                   << " score cp " << score
                   << " nodes " << nodes_searched
                   << " time " << elapsed_ms
-                  << " pv " << move.to_string(board)
-                  << " tt " << std::fixed << std::setprecision(1) << hit_rate << "%"
-                  << " hits " << tt_stats.hits
-                  << " miss " << tt_stats.misses
-                  << " ovwr " << tt_stats.overwrites
+                  << " pv " << move.to_uci()
                   << std::endl;
 
         // Early exit if we found a mate
@@ -227,20 +218,7 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
         }
     }
 
-    const auto& final_stats = tt.get_stats();
-    u64 final_total = final_stats.hits + final_stats.misses;
-    double final_hit_rate = final_total > 0 ? (100.0 * final_stats.hits / final_total) : 0.0;
-
-    std::cout << "info string tt_occupancy " << std::fixed << std::setprecision(1) << tt.occupancy_percent() << "%"
-              << " entries " << tt.count_occupied() << "/" << tt.size()
-              << " hit_rate " << final_hit_rate << "%"
-              << " hits " << final_stats.hits
-              << " misses " << final_stats.misses
-              << " stores " << final_stats.stores
-              << " overwrites " << final_stats.overwrites
-              << std::endl;
-
-    std::cout << "bestmove " << result.best_move.to_string(board) << std::endl;
+    // Note: bestmove is output by caller (UCI loop) to avoid duplication
 
     return result;
 }

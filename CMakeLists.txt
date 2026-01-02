@@ -39,13 +39,30 @@ set(CMAKE_CXX_FLAGS_RELEASE
     -flto=thin")
 set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto=thin")
 
-# Source files for main executable (exclude generator)
-file(GLOB_RECURSE SOURCES "src/*.cpp")
-list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/gen_magics.cpp")
+# Core chess library (shared between engine and tools)
+add_library(cachemiss_core STATIC
+    src/board.cpp
+    src/move.cpp
+    src/zobrist.cpp
+    src/eval.cpp
+    src/perft.cpp
+    src/epd.cpp
+    src/ttable.cpp
+)
+target_include_directories(cachemiss_core PUBLIC src)
 
-# Main executable
-add_executable(cachemiss ${SOURCES})
-target_include_directories(cachemiss PRIVATE src)
+# Main engine executable
+add_executable(cachemiss
+    src/main.cpp
+    src/uci.cpp
+    src/search.cpp
+    src/bench.cpp
+)
+target_link_libraries(cachemiss cachemiss_core)
+
+# Match supervisor tool
+add_executable(match tools/match.cpp)
+target_link_libraries(match cachemiss_core)
 
 # Magic bitboard generator (standalone tool)
 add_executable(gen_magics src/gen_magics.cpp)

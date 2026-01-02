@@ -3,6 +3,7 @@
 #include "move.hpp"
 #include "perft.hpp"
 #include "search.hpp"
+#include "uci.hpp"
 #include "zobrist.hpp"
 #include <cstring>
 #include <iostream>
@@ -92,9 +93,11 @@ int main(int argc, char* argv[]) {
         std::cout << nodes << '\n';
     } else if (search_time > 0) {
         TTable tt(mem_mb);
-        search(board, tt, search_time);
+        SearchResult result = search(board, tt, search_time);
+        std::cout << "bestmove " << result.best_move.to_uci() << std::endl;
     } else {
-        // TODO: UCI mode
+        // Default: UCI mode
+        uci_loop(mem_mb);
     }
 
     return 0;
