@@ -11,12 +11,15 @@ TTable::TTable(size_t mb) {
     clear();
 }
 
-bool TTable::probe(u64 hash, int depth, int alpha, int beta, int& score, Move32& best_move) const {
+bool TTable::probe(u64 hash, int depth, int alpha, int beta, int& score, Move32& best_move) {
     const TTEntry& entry = table[hash & mask];
 
     if (entry.hash != hash) {
+        stats.misses++;
         return false;
     }
+
+    stats.hits++;
 
     // Always return best move for move ordering
     best_move = entry.best_move;
@@ -44,6 +47,11 @@ bool TTable::probe(u64 hash, int depth, int alpha, int beta, int& score, Move32&
 void TTable::store(u64 hash, int depth, int score, TTFlag flag, Move32 best_move) {
     TTEntry& entry = table[hash & mask];
 
+    stats.stores++;
+    if (entry.hash != 0) {
+        stats.overwrites++;
+    }
+
     // Always replace (simple scheme, can improve later)
     entry.hash = hash;
     entry.score = static_cast<s16>(score);
@@ -54,4 +62,21 @@ void TTable::store(u64 hash, int depth, int score, TTFlag flag, Move32 best_move
 
 void TTable::clear() {
     std::fill(table.begin(), table.end(), TTEntry{0, 0, 0, 0, Move32(0)});
+    reset_stats();
+}
+
+void TTable::reset_stats() {
+    stats = TTStats{};
+}
+
+size_t TTable::count_occupied() const {
+    size_t count = 0;
+    for (const auto& entry : table) {
+        if (entry.hash != 0) count++;
+    }
+    return count;
+}
+
+double TTable::occupancy_percent() const {
+    return table.empty() ? 0.0 : (100.0 * count_occupied() / table.size());
 }
