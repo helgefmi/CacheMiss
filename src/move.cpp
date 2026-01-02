@@ -419,3 +419,9 @@ bool is_attacked(int square, Color attacker, const Board& board) {
         return is_attacked<Color::Black>(square, board);
     }
 }
+
+bool is_illegal(const Board& board) {
+    Color them = board.turn;  // Side to move next
+    Color us = opposite(them);  // Side that just moved
+    return is_attacked(board.king_sq[(int)us], them, board);
+}

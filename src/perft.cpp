@@ -34,15 +34,6 @@ void PerftTable::store(u64 hash, int depth, u64 nodes) {
     entry.depth = static_cast<u8>(depth);
 }
 
-// Check if the side that just moved left their king in check (illegal move)
-static bool is_illegal(const Board& board) {
-    Color them = board.turn;  // Side to move next
-    Color us = opposite(them);  // Side that just moved
-    Bitboard king_bb = board.pieces[(int)us][(int)Piece::King];
-    int king_sq = lsb_index(king_bb);
-    return is_attacked(king_sq, them, board);
-}
-
 u64 perft(Board& board, int depth, PerftTable* tt) {
     if (depth == 0) return 1;
 

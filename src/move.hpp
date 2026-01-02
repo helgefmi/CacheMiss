@@ -89,3 +89,6 @@ void make_move(Board& board, Move32& move);
 void unmake_move(Board& board, const Move32& move);
 
 bool is_attacked(int square, Color attacker, const Board& board);
+
+// Check if the side that just moved left their king in check (illegal move)
+bool is_illegal(const Board& board);

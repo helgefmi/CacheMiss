@@ -2,6 +2,7 @@
 #include "board.hpp"
 #include "move.hpp"
 #include "perft.hpp"
+#include "search.hpp"
 #include "zobrist.hpp"
 #include <cstring>
 #include <iostream>
@@ -13,6 +14,7 @@ void print_usage(const char* prog) {
               << "  -fen <fen>      Set position (default: starting position)\n"
               << "  -perft <depth>  Run perft to given depth\n"
               << "  -divide <depth> Run divide (perft per move) to given depth\n"
+              << "  -search [time]  Search for best move (time in ms, default: 10000)\n"
               << "  -bench-perftsuite <file> [max_depth]  Run perft test suite\n"
               << "  -mem <mb>       Hash table size in MB (default: 512)\n";
 }
@@ -23,6 +25,7 @@ int main(int argc, char* argv[]) {
     std::string fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     int perft_depth = 0;
     int divide_depth = 0;
+    int search_time = 0;
     std::string perftsuite_file;
     int perftsuite_max_depth = 0;
     size_t mem_mb = 512;
@@ -36,6 +39,11 @@ int main(int argc, char* argv[]) {
             divide_depth = std::stoi(argv[++i]);
         } else if (strcmp(argv[i], "-mem") == 0 && i + 1 < argc) {
             mem_mb = std::stoul(argv[++i]);
+        } else if (strcmp(argv[i], "-search") == 0) {
+            search_time = 10000;  // default 10 seconds
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+                search_time = std::stoi(argv[++i]);
+            }
         } else if (strcmp(argv[i], "-bench-perftsuite") == 0 && i + 1 < argc) {
             perftsuite_file = argv[++i];
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
@@ -65,6 +73,9 @@ int main(int argc, char* argv[]) {
         PerftTable tt(mem_mb);
         u64 nodes = perft(board, perft_depth, &tt);
         std::cout << nodes << '\n';
+    } else if (search_time > 0) {
+        TTable tt(mem_mb);
+        search(board, tt, search_time);
     } else {
         // Default: show legal moves
         for (auto move : generate_moves(board)) {
