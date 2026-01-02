@@ -32,6 +32,72 @@ static bool in_check(const Board& board) {
     return is_attacked(board.king_sq[(int)us], them, board);
 }
 
+// Quiescence search - only searches captures and promotions
+static int quiescence(Board& board, int alpha, int beta, int ply) {
+    if (check_time()) return 0;
+
+    nodes_searched++;
+
+    bool in_chk = in_check(board);
+
+    // Stand-pat: evaluate the position without making any move
+    // But if in check, we must make a move - can't use stand_pat
+    if (!in_chk) {
+        int stand_pat = evaluate(board);
+
+        if (stand_pat >= beta) {
+            return beta;
+        }
+
+        if (stand_pat > alpha) {
+            alpha = stand_pat;
+        }
+    }
+
+    MoveList moves = generate_moves(board);
+
+    int legal_moves = 0;
+
+    for (int i = 0; i < moves.size; ++i) {
+        Move32& move = moves[i];
+
+        // Only search captures and promotions (but all moves if in check)
+        if (!in_chk && !move.is_capture() && !move.is_promotion()) {
+            continue;
+        }
+
+        make_move(board, move);
+
+        if (is_illegal(board)) {
+            unmake_move(board, move);
+            continue;
+        }
+
+        legal_moves++;
+
+        int score = -quiescence(board, -beta, -alpha, ply + 1);
+
+        unmake_move(board, move);
+
+        if (stop_search) return 0;
+
+        if (score >= beta) {
+            return beta;
+        }
+
+        if (score > alpha) {
+            alpha = score;
+        }
+    }
+
+    // If in check and no legal moves, it's checkmate
+    if (in_chk && legal_moves == 0) {
+        return -MATE_SCORE + ply;
+    }
+
+    return alpha;
+}
+
 static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, int ply) {
     if (check_time()) return 0;
 
@@ -44,9 +110,9 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
         return tt_score;
     }
 
-    // Leaf node
+    // Leaf node - enter quiescence search
     if (depth == 0) {
-        return evaluate(board);
+        return quiescence(board, alpha, beta, ply);
     }
 
     MoveList moves = generate_moves(board);
