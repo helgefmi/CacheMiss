@@ -269,6 +269,7 @@ void make_move(Board& board, Move32& move) {
 
     // Save undo info
     move.set_undo_info(board.castling, board.ep_file);
+    board.hash_stack[board.hash_sp++] = board.hash;
 
     // Flip turn
     u64 h = board.hash ^ zobrist::side_to_move;
@@ -289,6 +290,9 @@ void make_move(Board& board, Move32& move) {
     board.pieces[(int)turn][(int)to_piece] |= square_bb(to);
     h ^= zobrist::pieces[(int)turn][(int)piece][from];
     h ^= zobrist::pieces[(int)turn][(int)to_piece][to];
+    if (piece == Piece::King) {
+        board.king_sq[(int)turn] = to;
+    }
 
     // Handle captures
     if (captured != Piece::None) {
@@ -358,21 +362,9 @@ void unmake_move(Board& board, const Move32& move) {
     const Piece to_piece = board.pieces_on_square[to];
     const Piece piece = (promotion != Piece::None) ? Piece::Pawn : to_piece;
 
-    u64 h = board.hash ^ zobrist::side_to_move;
-
-    // Restore en passant
-    if (board.ep_file < 8) {
-        h ^= zobrist::ep_file[board.ep_file];
-    }
+    // Restore en passant and castling rights
     board.ep_file = move.prev_ep_file();
-    if (board.ep_file < 8) {
-        h ^= zobrist::ep_file[board.ep_file];
-    }
-
-    // Restore castling rights
-    h ^= zobrist::castling[board.castling];
     board.castling = move.prev_castling();
-    h ^= zobrist::castling[board.castling];
 
     // Move piece back
     board.pieces_on_square[from] = piece;
@@ -381,8 +373,9 @@ void unmake_move(Board& board, const Move32& move) {
     board.occupied[(int)turn] &= ~square_bb(to);
     board.pieces[(int)turn][(int)piece] |= square_bb(from);
     board.pieces[(int)turn][(int)to_piece] &= ~square_bb(to);
-    h ^= zobrist::pieces[(int)turn][(int)piece][from];
-    h ^= zobrist::pieces[(int)turn][(int)to_piece][to];
+    if (piece == Piece::King) {
+        board.king_sq[(int)turn] = from;
+    }
 
     // Restore captured piece
     if (captured != Piece::None) {
@@ -391,12 +384,10 @@ void unmake_move(Board& board, const Move32& move) {
             board.pieces_on_square[captured_sq] = Piece::Pawn;
             board.occupied[(int)enemy] |= square_bb(captured_sq);
             board.pieces[(int)enemy][(int)Piece::Pawn] |= square_bb(captured_sq);
-            h ^= zobrist::pieces[(int)enemy][(int)Piece::Pawn][captured_sq];
         } else {
             board.pieces_on_square[to] = captured;
             board.occupied[(int)enemy] |= square_bb(to);
             board.pieces[(int)enemy][(int)captured] |= square_bb(to);
-            h ^= zobrist::pieces[(int)enemy][(int)captured][to];
         }
     }
 
@@ -414,13 +405,11 @@ void unmake_move(Board& board, const Move32& move) {
         board.occupied[(int)turn] &= ~square_bb(rook_to);
         board.pieces[(int)turn][(int)Piece::Rook] |= square_bb(rook_from);
         board.pieces[(int)turn][(int)Piece::Rook] &= ~square_bb(rook_to);
-        h ^= zobrist::pieces[(int)turn][(int)Piece::Rook][rook_from];
-        h ^= zobrist::pieces[(int)turn][(int)Piece::Rook][rook_to];
     }
 
-    // Update all_occupied
+    // Update all_occupied and restore hash directly from stack
     board.all_occupied = board.occupied[0] | board.occupied[1];
-    board.hash = h;
+    board.hash = board.hash_stack[--board.hash_sp];
 }
 
 bool is_attacked(int square, Color attacker, const Board& board) {

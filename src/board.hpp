@@ -11,7 +11,10 @@ struct Board {
     u8 ep_file;                                     // En passant target file (0-7), 8 = none
     u8 castling;                                    // Castling rights: bit0=wQ, bit1=wK, bit2=bQ, bit3=bK
     std::array<Piece, 64> pieces_on_square;
+    std::array<int, 2> king_sq;                     // King square for each color
     u64 hash;  // Zobrist hash
+    std::array<u64, 256> hash_stack;                // Stack for hash restoration in unmake
+    int hash_sp = 0;                                // Stack pointer
 
     Board() : Board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") {}
     Board(std::string_view fen);

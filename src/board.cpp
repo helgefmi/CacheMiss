@@ -13,6 +13,7 @@ Board::Board(std::string_view fen) {
     all_occupied = Bitboard(0);
     ep_file = 8;  // 8 = no en passant
     castling = 0;
+    king_sq = {-1, -1};
 
     std::istringstream ss(fen.data());
     std::string position, active_color, castling_str, en_passant_str;
@@ -35,6 +36,9 @@ Board::Board(std::string_view fen) {
             occupied[static_cast<int>(color)] |= bb;
             all_occupied |= bb;
             pieces_on_square[sq] = piece_type;
+            if (piece_type == Piece::King) {
+                king_sq[static_cast<int>(color)] = sq;
+            }
 
             file++;
         }
