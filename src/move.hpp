@@ -47,22 +47,8 @@ struct Move32 {
         data = (data & 0xFC03FFFF) | (castling << 18) | (ep_file << 22);
     }
 
-    std::string to_string() const {
-        std::string move_str;
-        move_str += 'a' + (from() % 8);
-        move_str += '1' + (from() / 8);
-        move_str += 'a' + (to() % 8);
-        move_str += '1' + (to() / 8);
-        if (is_capture()) {
-            move_str += 'x';
-            move_str += piece_to_char(captured());
-        }
-        if (is_promotion()) {
-            move_str += '=';
-            move_str += piece_to_char(promotion());
-        }
-        return move_str;
-    }
+    // Convert move to Standard Algebraic Notation (SAN)
+    std::string to_string(const Board& board) const;
 };
 
 struct MoveList {

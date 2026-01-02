@@ -425,3 +425,64 @@ bool is_illegal(const Board& board) {
     Color us = opposite(them);  // Side that just moved
     return is_attacked(board.king_sq[(int)us], them, board);
 }
+
+std::string Move32::to_string(const Board& board) const {
+    int from_sq = from();
+    int to_sq = to();
+    Piece piece = board.pieces_on_square[from_sq];
+
+    // Castling
+    if (is_castling()) {
+        int file_diff = (to_sq % 8) - (from_sq % 8);
+        return file_diff > 0 ? "O-O" : "O-O-O";
+    }
+
+    std::string san;
+
+    // Piece letter (not for pawns)
+    if (piece != Piece::Pawn) {
+        san += piece_to_char(piece);
+    }
+
+    // Disambiguation for non-pawn pieces
+    if (piece != Piece::Pawn) {
+        MoveList moves = generate_moves(board);
+        bool need_file = false, need_rank = false;
+
+        for (const auto& m : moves) {
+            if (m.to() == to_sq && m.from() != from_sq &&
+                board.pieces_on_square[m.from()] == piece) {
+                // Another piece of same type can move to same square
+                if (m.from() % 8 == from_sq % 8) need_rank = true;
+                else need_file = true;
+            }
+        }
+
+        if (need_file || (need_rank && (from_sq % 8) != (to_sq % 8))) {
+            san += 'a' + (from_sq % 8);
+        }
+        if (need_rank) {
+            san += '1' + (from_sq / 8);
+        }
+    } else if (is_capture() || is_en_passant()) {
+        // Pawn captures include source file
+        san += 'a' + (from_sq % 8);
+    }
+
+    // Capture indicator
+    if (is_capture() || is_en_passant()) {
+        san += 'x';
+    }
+
+    // Destination square
+    san += 'a' + (to_sq % 8);
+    san += '1' + (to_sq / 8);
+
+    // Promotion
+    if (is_promotion()) {
+        san += '=';
+        san += piece_to_char(promotion());
+    }
+
+    return san;
+}

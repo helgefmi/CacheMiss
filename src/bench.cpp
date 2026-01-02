@@ -1,10 +1,22 @@
 #include "bench.hpp"
 #include "board.hpp"
 #include "epd.hpp"
+#include "move.hpp"
 #include "perft.hpp"
+#include "search.hpp"
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <algorithm>
+
+// Strip check/checkmate indicators from SAN
+static std::string strip_check_indicators(const std::string& san) {
+    std::string result = san;
+    while (!result.empty() && (result.back() == '+' || result.back() == '#')) {
+        result.pop_back();
+    }
+    return result;
+}
 
 void bench_perftsuite(const std::string& filename, int max_depth, size_t mem_mb) {
     auto entries = parse_epd_file(filename);
@@ -87,4 +99,71 @@ void bench_perftsuite(const std::string& filename, int max_depth, size_t mem_mb)
     double hit_rate = cache_total > 0 ? (100.0 * cache_hits / cache_total) : 0.0;
     std::cout << "Cache hits: " << cache_hits << ", misses: " << cache_misses
               << " (" << std::fixed << std::setprecision(1) << hit_rate << "% hit rate)\n";
+}
+
+void bench_wac(const std::string& filename, int time_limit_ms, size_t mem_mb) {
+    auto entries = parse_wac_file(filename);
+
+    if (entries.empty()) {
+        std::cerr << "Failed to open or parse: " << filename << '\n';
+        return;
+    }
+
+    TTable tt(mem_mb);
+
+    std::cout << "Running WAC suite: " << filename << '\n';
+    std::cout << "Positions: " << entries.size() << '\n';
+    std::cout << "Time per position: " << time_limit_ms << " ms\n";
+    std::cout << "Hash table: " << mem_mb << " MB\n";
+    std::cout << '\n';
+
+    int passed = 0;
+    int failed = 0;
+
+    auto suite_start = std::chrono::steady_clock::now();
+
+    for (size_t i = 0; i < entries.size(); i++) {
+        const auto& entry = entries[i];
+        Board board(entry.fen);
+
+        std::cout << "[" << (i + 1) << "/" << entries.size() << "] " << entry.id << ": ";
+
+        tt.clear();
+        SearchResult result = search(board, tt, time_limit_ms);
+
+        std::string found_san = result.best_move.to_string(board);
+
+        // Check if found move matches any of the expected best moves
+        bool is_correct = false;
+        for (const auto& expected : entry.best_moves) {
+            std::string expected_clean = strip_check_indicators(expected);
+            if (found_san == expected_clean) {
+                is_correct = true;
+                break;
+            }
+        }
+
+        if (is_correct) {
+            std::cout << found_san << " (depth " << result.depth << ") OK\n";
+            passed++;
+        } else {
+            std::cout << found_san << " (expected ";
+            for (size_t j = 0; j < entry.best_moves.size(); j++) {
+                if (j > 0) std::cout << "/";
+                std::cout << entry.best_moves[j];
+            }
+            std::cout << ", depth " << result.depth << ") FAIL\n";
+            failed++;
+        }
+    }
+
+    auto suite_end = std::chrono::steady_clock::now();
+    auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(suite_end - suite_start).count();
+
+    std::cout << "\n=== Results ===\n";
+    std::cout << "Passed: " << passed << "/" << (passed + failed);
+    std::cout << " (" << std::fixed << std::setprecision(1)
+              << (100.0 * passed / (passed + failed)) << "%)\n";
+    std::cout << "Failed: " << failed << '\n';
+    std::cout << "Total time: " << total_ms / 1000 << "." << (total_ms % 1000) / 100 << " s\n";
 }

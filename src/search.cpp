@@ -206,7 +206,7 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
                   << " score cp " << score
                   << " nodes " << nodes_searched
                   << " time " << elapsed_ms
-                  << " pv " << move.to_string()
+                  << " pv " << move.to_string(board)
                   << std::endl;
 
         // Early exit if we found a mate
@@ -215,7 +215,7 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
         }
     }
 
-    std::cout << "bestmove " << result.best_move.to_string() << std::endl;
+    std::cout << "bestmove " << result.best_move.to_string(board) << std::endl;
 
     return result;
 }

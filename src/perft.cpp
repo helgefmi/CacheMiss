@@ -70,7 +70,7 @@ void divide(Board& board, int depth, PerftTable* tt) {
         u64 nodes = (depth > 1) ? perft(board, depth - 1, tt) : 1;
         unmake_move(board, move);
 
-        std::cout << move.to_string() << ": " << nodes << '\n';
+        std::cout << move.to_string(board) << ": " << nodes << '\n';
         total += nodes;
     }
 
