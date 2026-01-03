@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <queue>
@@ -19,6 +21,14 @@
 
 #include <unistd.h>
 #include <sys/wait.h>
+
+// FTXUI for terminal UI
+#include <ftxui/component/component.hpp>
+#include <ftxui/component/screen_interactive.hpp>
+#include <ftxui/dom/elements.hpp>
+#include <ftxui/screen/terminal.hpp>
+
+using namespace ftxui;
 
 // UCI Engine wrapper - manages subprocess communication
 class Engine {
@@ -234,8 +244,16 @@ bool is_threefold_repetition(const Board& board, const std::vector<u64>& positio
     return false;
 }
 
-// Play a single game between two engines
-GameOutcome play_game(Engine& white, Engine& black, const std::string& start_fen, int movetime_ms) {
+// Forward declarations for TUI
+class GameStateManager;
+
+// Callback type for TUI updates during game play
+using GameUpdateCallback = std::function<void(int game_id, const std::string& fen, const std::vector<std::string>& moves)>;
+
+// Play a single game between two engines (with optional TUI updates)
+GameOutcome play_game(Engine& white, Engine& black, const std::string& start_fen, int movetime_ms,
+                      const std::string& white_name, const std::string& black_name,
+                      GameUpdateCallback on_move = nullptr) {
     Board board(start_fen);
     std::vector<std::string> move_history;
     std::vector<u64> position_hashes;
@@ -283,12 +301,12 @@ GameOutcome play_game(Engine& white, Engine& black, const std::string& start_fen
 
         if (legal_count == 0) {
             // No legal moves - checkmate or stalemate
-            Color them = opposite(board.turn);
+            ::Color them = opposite(board.turn);
             bool in_check = is_attacked(board.king_sq[(int)board.turn], them, board);
 
             if (in_check) {
                 // Checkmate - side to move loses
-                outcome.result = (board.turn == Color::White) ? GameResult::BlackWin : GameResult::WhiteWin;
+                outcome.result = (board.turn == ::Color::White) ? GameResult::BlackWin : GameResult::WhiteWin;
             } else {
                 // Stalemate
                 outcome.result = GameResult::Draw;
@@ -301,20 +319,26 @@ GameOutcome play_game(Engine& white, Engine& black, const std::string& start_fen
         position_hashes.push_back(board.hash);
 
         // Get move from current player
-        Engine& current = (board.turn == Color::White) ? white : black;
+        Engine& current = (board.turn == ::Color::White) ? white : black;
         std::string uci_move = current.get_bestmove(start_fen, move_history, movetime_ms);
 
         // Apply move
         Move32 move = parse_uci_move(uci_move, board);
         if (move.data == 0) {
-            std::cerr << "Error: Invalid move '" << uci_move << "' from engine" << std::endl;
-            outcome.result = (board.turn == Color::White) ? GameResult::BlackWin : GameResult::WhiteWin;
+            const std::string& engine_name = (board.turn == ::Color::White) ? white_name : black_name;
+            std::cerr << "Error: Invalid move '" << uci_move << "' from " << engine_name << std::endl;
+            outcome.result = (board.turn == ::Color::White) ? GameResult::BlackWin : GameResult::WhiteWin;
             break;
         }
 
         make_move(board, move);
         move_history.push_back(uci_move);
         outcome.num_moves++;
+
+        // Update TUI state after each move
+        if (on_move) {
+            on_move(-1, board.to_fen(), move_history);  // game_id filled in by caller
+        }
 
         // Safety limit
         if (outcome.num_moves > 500) {
@@ -384,17 +408,33 @@ struct GameReport {
     std::string fen;
 };
 
-// Thread-safe results collector
+// Thread-safe results collector with running stats
 class ResultsCollector {
     std::vector<GameReport> results;
     std::mutex mtx;
     std::atomic<int> completed{0};
+    std::atomic<int> wins1{0};
+    std::atomic<int> wins2{0};
+    std::atomic<int> draws{0};
     int total_games;
 
 public:
     ResultsCollector(int total) : total_games(total) {}
 
     void add(GameReport report) {
+        // Update running stats
+        switch (report.outcome.result) {
+            case GameResult::WhiteWin:
+                if (report.engine1_is_white) wins1++; else wins2++;
+                break;
+            case GameResult::BlackWin:
+                if (report.engine1_is_white) wins2++; else wins1++;
+                break;
+            case GameResult::Draw:
+                draws++;
+                break;
+        }
+
         std::lock_guard<std::mutex> lock(mtx);
         results.push_back(std::move(report));
         completed++;
@@ -402,6 +442,9 @@ public:
 
     int get_completed() const { return completed.load(); }
     int get_total() const { return total_games; }
+    int get_wins1() const { return wins1.load(); }
+    int get_wins2() const { return wins2.load(); }
+    int get_draws() const { return draws.load(); }
 
     std::vector<GameReport> get_results() {
         std::lock_guard<std::mutex> lock(mtx);
@@ -409,7 +452,261 @@ public:
     }
 };
 
-// Worker thread function
+// ============================================================================
+// TUI: Game display state for rendering
+// ============================================================================
+
+struct GameDisplay {
+    int game_id;
+    std::string start_fen;
+    std::string current_fen;
+    std::vector<std::string> moves;  // UCI moves
+    GameResult result = GameResult::Draw;
+    DrawReason draw_reason = DrawReason::None;
+    bool finished = false;
+    bool engine1_is_white = true;
+    int view_move_index = -1;  // -1 means show latest position
+};
+
+// Thread-safe game state manager for TUI
+class GameStateManager {
+    std::vector<GameDisplay> games;
+    mutable std::mutex mtx;
+
+public:
+    void init_game(int game_id, const std::string& fen, bool engine1_is_white) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (game_id >= (int)games.size()) {
+            games.resize(game_id + 1);
+        }
+        games[game_id].game_id = game_id;
+        games[game_id].start_fen = fen;
+        games[game_id].current_fen = fen;
+        games[game_id].engine1_is_white = engine1_is_white;
+        games[game_id].finished = false;
+        games[game_id].moves.clear();
+    }
+
+    void update_game(int game_id, const std::string& fen, const std::vector<std::string>& moves) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (game_id < (int)games.size()) {
+            games[game_id].current_fen = fen;
+            games[game_id].moves = moves;
+        }
+    }
+
+    void finish_game(int game_id, GameResult result, DrawReason reason) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (game_id < (int)games.size()) {
+            games[game_id].result = result;
+            games[game_id].draw_reason = reason;
+            games[game_id].finished = true;
+        }
+    }
+
+    std::vector<GameDisplay> get_games() const {
+        std::lock_guard<std::mutex> lock(mtx);
+        return games;
+    }
+
+    int count_finished() const {
+        std::lock_guard<std::mutex> lock(mtx);
+        int count = 0;
+        for (const auto& g : games) {
+            if (g.finished) count++;
+        }
+        return count;
+    }
+
+    void set_view_move(int game_id, int move_index) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (game_id < (int)games.size()) {
+            games[game_id].view_move_index = move_index;
+        }
+    }
+
+    int get_view_move(int game_id) const {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (game_id < (int)games.size()) {
+            return games[game_id].view_move_index;
+        }
+        return -1;
+    }
+
+    int get_move_count(int game_id) const {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (game_id < (int)games.size()) {
+            return (int)games[game_id].moves.size();
+        }
+        return 0;
+    }
+
+    GameDisplay get_game(int game_id) const {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (game_id < (int)games.size()) {
+            return games[game_id];
+        }
+        return GameDisplay{};
+    }
+
+    int size() const {
+        std::lock_guard<std::mutex> lock(mtx);
+        return (int)games.size();
+    }
+};
+
+// ============================================================================
+// TUI: Rendering functions
+// ============================================================================
+
+// Get FEN at a specific move index (0 = after first move, -1 = current/latest)
+std::string get_fen_at_move(const GameDisplay& game, int move_index) {
+    if (move_index < 0 || move_index >= (int)game.moves.size()) {
+        return game.current_fen;
+    }
+
+    // Replay moves from start position
+    Board board(game.start_fen);
+    for (int i = 0; i <= move_index; ++i) {
+        Move32 move = parse_uci_move(game.moves[i], board);
+        if (move.data != 0) {
+            make_move(board, move);
+        }
+    }
+    return board.to_fen();
+}
+
+// ASCII chess pieces: white uppercase, black lowercase
+constexpr char PIECE_ASCII[2][6] = {
+    {'P', 'N', 'B', 'R', 'Q', 'K'},  // White
+    {'p', 'n', 'b', 'r', 'q', 'k'}   // Black
+};
+
+Element render_board(const std::string& fen) {
+    Board board(fen);
+    Elements rows;
+
+    // Same format as Board::print()
+    rows.push_back(text("  +---+---+---+---+---+---+---+---+"));
+
+    for (int rank = 7; rank >= 0; --rank) {
+        std::string line = std::to_string(rank + 1) + " |";
+
+        for (int file = 0; file < 8; ++file) {
+            int sq = rank * 8 + file;
+            char piece_char = '.';
+
+            // Find piece on this square
+            for (int c = 0; c < 2; ++c) {
+                for (int p = 0; p < 6; ++p) {
+                    if (board.pieces[c][p] & (1ULL << sq)) {
+                        piece_char = PIECE_ASCII[c][p];
+                    }
+                }
+            }
+
+            line += " ";
+            line += piece_char;
+            line += " |";
+        }
+
+        rows.push_back(text(line));
+        rows.push_back(text("  +---+---+---+---+---+---+---+---+"));
+    }
+
+    rows.push_back(text("    a   b   c   d   e   f   g   h"));
+
+    return vbox(rows);
+}
+
+Element render_moves(const std::vector<std::string>& moves, int highlight_index) {
+    if (moves.empty()) {
+        return text("(no moves)") | dim;
+    }
+
+    Elements parts;
+    int move_num = 1;
+    for (size_t i = 0; i < moves.size(); ++i) {
+        if (i % 2 == 0) {
+            if (i > 0) parts.push_back(text(" "));
+            parts.push_back(text(std::to_string(move_num++) + ".") | dim);
+        }
+
+        auto move_text = text(" " + moves[i]);
+        if ((int)i == highlight_index) {
+            move_text = move_text | inverted;
+        }
+        parts.push_back(move_text);
+    }
+
+    return hflow(parts);
+}
+
+Element render_game_card(const GameDisplay& game, const std::string& engine1_name, const std::string& engine2_name, bool selected) {
+    // Header with game number and status
+    std::string status;
+    if (game.finished) {
+        switch (game.result) {
+            case GameResult::WhiteWin: status = "1-0"; break;
+            case GameResult::BlackWin: status = "0-1"; break;
+            case GameResult::Draw: status = "1/2"; break;
+        }
+        if (game.draw_reason != DrawReason::None) {
+            switch (game.draw_reason) {
+                case DrawReason::Stalemate: status += " stale"; break;
+                case DrawReason::FiftyMove: status += " 50mv"; break;
+                case DrawReason::Repetition: status += " rep"; break;
+                case DrawReason::InsufficientMaterial: status += " insuf"; break;
+                default: break;
+            }
+        }
+    } else {
+        status = "...";
+    }
+
+    std::string header = "Game " + std::to_string(game.game_id + 1) + " [" + status + "]";
+
+    // Show which engine is which color
+    const std::string& white_name = game.engine1_is_white ? engine1_name : engine2_name;
+    const std::string& black_name = game.engine1_is_white ? engine2_name : engine1_name;
+
+    // Determine which position and move to show
+    int view_idx = game.view_move_index;
+    int total_moves = (int)game.moves.size();
+    std::string display_fen = get_fen_at_move(game, view_idx);
+
+    // Move indicator: show "move X/Y" or "latest"
+    std::string move_info;
+    if (view_idx < 0 || view_idx >= total_moves - 1) {
+        move_info = "move " + std::to_string(total_moves) + "/" + std::to_string(total_moves);
+    } else {
+        move_info = "move " + std::to_string(view_idx + 1) + "/" + std::to_string(total_moves);
+    }
+
+    auto card = vbox({
+        text(header) | bold,
+        hbox({text("W:") | dim, text(white_name.substr(white_name.rfind('/') + 1))}),
+        hbox({text("B:") | dim, text(black_name.substr(black_name.rfind('/') + 1))}),
+        text(move_info) | dim,
+        separator(),
+        render_board(display_fen),
+        separator(),
+        render_moves(game.moves, view_idx) | size(HEIGHT, LESS_THAN, 4),
+    });
+
+    if (selected) {
+        card = card | border | color(ftxui::Color::Yellow);
+    } else {
+        card = card | border;
+    }
+
+    return card;
+}
+
+// ============================================================================
+// Worker thread function (updated for TUI)
+// ============================================================================
+
 void worker_thread(
     int thread_id,
     const std::string& engine1_path,
@@ -418,7 +715,8 @@ void worker_thread(
     int hash_mb,
     WorkQueue& work_queue,
     ResultsCollector& results,
-    bool quiet
+    GameStateManager& state,
+    ScreenInteractive& screen
 ) {
     try {
         // Each thread has its own engine instances
@@ -435,8 +733,21 @@ void worker_thread(
         while (work_queue.pop(task)) {
             Engine& white = task.engine1_is_white ? engine1 : engine2;
             Engine& black = task.engine1_is_white ? engine2 : engine1;
+            const std::string& white_name = task.engine1_is_white ? engine1_path : engine2_path;
+            const std::string& black_name = task.engine1_is_white ? engine2_path : engine1_path;
 
-            GameOutcome outcome = play_game(white, black, task.fen, movetime_ms);
+            // Callback to update TUI on each move
+            int game_id = task.game_id;
+            auto on_move = [&state, &screen, game_id](int, const std::string& fen, const std::vector<std::string>& moves) {
+                state.update_game(game_id, fen, moves);
+                screen.Post(Event::Custom);
+            };
+
+            GameOutcome outcome = play_game(white, black, task.fen, movetime_ms, white_name, black_name, on_move);
+
+            // Mark game as finished in TUI state
+            state.finish_game(task.game_id, outcome.result, outcome.draw_reason);
+            screen.Post(Event::Custom);
 
             GameReport report;
             report.game_id = task.game_id;
@@ -445,12 +756,6 @@ void worker_thread(
             report.fen = task.fen;
 
             results.add(std::move(report));
-
-            if (!quiet) {
-                int done = results.get_completed();
-                int total = results.get_total();
-                std::cerr << "\rProgress: " << done << "/" << total << " games completed" << std::flush;
-            }
         }
     } catch (const std::exception& e) {
         std::cerr << "\nThread " << thread_id << " error: " << e.what() << std::endl;
@@ -466,7 +771,10 @@ void print_usage(const char* prog) {
               << "  -games <n>       Games per position (default: 2)\n"
               << "  -threads <n>     Number of concurrent games (default: CPU count)\n"
               << "  -hash <mb>       Hash table size per engine (default: 512)\n"
-              << "  -quiet           Only show final score\n";
+              << "\nControls:\n"
+              << "  q/Esc            Quit\n"
+              << "  PgUp/PgDn        Scroll up/down\n"
+              << "  Home/End         Jump to top/bottom\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -485,7 +793,6 @@ int main(int argc, char* argv[]) {
     int games_per_position = 2;
     int num_threads = std::thread::hardware_concurrency();
     int hash_mb = 512;
-    bool quiet = false;
 
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "-movetime") == 0 && i + 1 < argc) {
@@ -500,8 +807,6 @@ int main(int argc, char* argv[]) {
             num_threads = std::stoi(argv[++i]);
         } else if (strcmp(argv[i], "-hash") == 0 && i + 1 < argc) {
             hash_mb = std::stoi(argv[++i]);
-        } else if (strcmp(argv[i], "-quiet") == 0) {
-            quiet = true;
         } else {
             std::cerr << "Unknown option: " << argv[i] << std::endl;
             print_usage(argv[0]);
@@ -527,51 +832,260 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Build work queue with all games
+    // Build work queue and initialize game state
     WorkQueue work_queue;
+    GameStateManager state;
     int game_id = 0;
     for (const auto& start_fen : positions) {
         for (int game = 0; game < games_per_position; ++game) {
             GameTask task;
             task.fen = start_fen;
             task.engine1_is_white = (game % 2 == 0);
-            task.game_id = game_id++;
-            work_queue.push(std::move(task));
+            task.game_id = game_id;
+            work_queue.push(task);
+            state.init_game(game_id, start_fen, task.engine1_is_white);
+            game_id++;
         }
     }
 
     int total_games = game_id;
     ResultsCollector results(total_games);
 
-    std::cout << "Playing " << total_games << " games across " << num_threads << " threads" << std::endl;
-    std::cout << "Engines: " << engine1_path << " vs " << engine2_path << std::endl;
-    std::cout << "Time per move: " << movetime_ms << "ms, Hash: " << hash_mb << "MB per engine" << std::endl;
-    std::cout << std::endl;
+    // Extract short engine names for display
+    auto short_name = [](const std::string& path) {
+        size_t pos = path.rfind('/');
+        return (pos != std::string::npos) ? path.substr(pos + 1) : path;
+    };
+    std::string engine1_short = short_name(engine1_path);
+    std::string engine2_short = short_name(engine2_path);
+
+    // Create FTXUI screen
+    auto screen = ScreenInteractive::Fullscreen();
+
+    // UI state
+    int selected_game = 0;     // Currently selected game card
+    int scroll_row = 0;        // First visible row
+    int cols = 1;              // Columns (computed in renderer)
+
+    // Main UI component
+    auto main_component = Renderer([&] {
+        auto games = state.get_games();
+        int num_games = (int)games.size();
+        int finished = state.count_finished();
+        int w1 = results.get_wins1();
+        int w2 = results.get_wins2();
+        int d = results.get_draws();
+        double score1 = w1 + 0.5 * d;
+        double pct = (finished > 0) ? (100.0 * score1 / finished) : 0;
+
+        // Header
+        std::ostringstream header_ss;
+        header_ss << engine1_short << " vs " << engine2_short
+                  << "  |  " << finished << "/" << total_games
+                  << " [W:" << w1 << " D:" << d << " L:" << w2
+                  << " = " << std::fixed << std::setprecision(1) << pct << "%]";
+
+        Element header = text(header_ss.str()) | bold | center;
+
+        // Help line
+        Element help = text("Arrows=select  ,/.=move  ;/:=10moves  Home/End=first/last  q=quit") | dim | center;
+
+        // Calculate columns based on terminal width
+        int term_width = Terminal::Size().dimx;
+        int term_height = Terminal::Size().dimy;
+        int game_width = 42;  // Width of each game card (board is 37 chars + borders)
+        cols = std::max(1, (term_width - 4) / game_width);
+
+        // Calculate visible rows (account for header, help, borders)
+        int card_height = 22;  // Height of a card (board is 18 lines + header)
+        int visible_rows = std::max(1, (term_height - 6) / card_height);
+
+        // Ensure selected game is valid
+        if (num_games > 0) {
+            selected_game = std::clamp(selected_game, 0, num_games - 1);
+        }
+
+        // Calculate which row the selected game is in
+        int selected_row = (num_games > 0) ? (selected_game / cols) : 0;
+        int total_rows = (num_games + cols - 1) / cols;
+
+        // Auto-scroll to keep selected in view
+        if (selected_row < scroll_row) {
+            scroll_row = selected_row;
+        } else if (selected_row >= scroll_row + visible_rows) {
+            scroll_row = selected_row - visible_rows + 1;
+        }
+        scroll_row = std::clamp(scroll_row, 0, std::max(0, total_rows - visible_rows));
+
+        // Render only visible rows
+        Elements rows;
+        for (int row = scroll_row; row < scroll_row + visible_rows && row < total_rows; ++row) {
+            Elements row_elements;
+            for (int c = 0; c < cols; ++c) {
+                int idx = row * cols + c;
+                if (idx < num_games) {
+                    bool is_selected = (idx == selected_game);
+                    row_elements.push_back(render_game_card(games[idx], engine1_path, engine2_path, is_selected) | flex);
+                }
+            }
+            if (!row_elements.empty()) {
+                rows.push_back(hbox(row_elements));
+            }
+        }
+
+        Element game_grid = vbox(rows);
+
+        // Scroll indicator
+        std::string scroll_info = "Row " + std::to_string(scroll_row + 1) + "-" +
+                                  std::to_string(std::min(scroll_row + visible_rows, total_rows)) +
+                                  "/" + std::to_string(total_rows);
+        Element scroll_indicator = text(scroll_info) | dim | center;
+
+        return vbox({
+            header,
+            help,
+            separator(),
+            game_grid | flex,
+            separator(),
+            scroll_indicator,
+        }) | border;
+    });
+
+    // Handle keyboard input
+    main_component = CatchEvent(main_component, [&](Event event) {
+        int num_games = state.size();
+        if (num_games == 0) num_games = total_games;
+
+        if (event == Event::Character('q') || event == Event::Escape) {
+            screen.Exit();
+            return true;
+        }
+
+        // Arrow keys for card selection
+        if (event == Event::ArrowRight) {
+            if (selected_game < num_games - 1) {
+                selected_game++;
+            }
+            return true;
+        }
+        if (event == Event::ArrowLeft) {
+            if (selected_game > 0) {
+                selected_game--;
+            }
+            return true;
+        }
+        if (event == Event::ArrowDown) {
+            if (selected_game + cols < num_games) {
+                selected_game += cols;
+            }
+            return true;
+        }
+        if (event == Event::ArrowUp) {
+            if (selected_game - cols >= 0) {
+                selected_game -= cols;
+            }
+            return true;
+        }
+
+        // Page up/down for scrolling
+        if (event == Event::PageDown) {
+            int visible_rows = 3;  // Move by 3 rows
+            selected_game = std::min(selected_game + cols * visible_rows, num_games - 1);
+            return true;
+        }
+        if (event == Event::PageUp) {
+            int visible_rows = 3;
+            selected_game = std::max(selected_game - cols * visible_rows, 0);
+            return true;
+        }
+
+        // Move navigation within selected game
+        // , = prev move, . = next move
+        // ; = prev 10 moves, : = next 10 moves
+        auto step_move = [&](int delta) {
+            int current_view = state.get_view_move(selected_game);
+            int move_count = state.get_move_count(selected_game);
+            if (move_count == 0) return;
+
+            int effective_view = (current_view < 0) ? move_count - 1 : current_view;
+            int new_view = std::clamp(effective_view + delta, 0, move_count - 1);
+
+            if (new_view == move_count - 1) {
+                state.set_view_move(selected_game, -1);  // Latest
+            } else {
+                state.set_view_move(selected_game, new_view);
+            }
+        };
+
+        if (event == Event::Character(',')) {
+            step_move(-1);
+            return true;
+        }
+        if (event == Event::Character('.')) {
+            step_move(1);
+            return true;
+        }
+        if (event == Event::Character(';')) {
+            step_move(-10);
+            return true;
+        }
+        if (event == Event::Character(':')) {
+            step_move(10);
+            return true;
+        }
+
+        // Home = first move, End = last move (for selected game)
+        if (event == Event::Home) {
+            state.set_view_move(selected_game, 0);
+            return true;
+        }
+        if (event == Event::End) {
+            state.set_view_move(selected_game, -1);  // -1 = latest
+            return true;
+        }
+
+        // Redraw on custom event (from worker threads)
+        if (event == Event::Custom) {
+            return true;
+        }
+        return false;
+    });
 
     // Spawn worker threads
     auto start_time = std::chrono::steady_clock::now();
     std::vector<std::thread> threads;
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back(worker_thread, i, engine1_path, engine2_path,
-                            movetime_ms, hash_mb, std::ref(work_queue), std::ref(results), quiet);
+                            movetime_ms, hash_mb, std::ref(work_queue), std::ref(results),
+                            std::ref(state), std::ref(screen));
     }
+
+    // Monitor thread to exit when all games are done
+    std::thread monitor([&] {
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (results.get_completed() >= total_games) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));  // Brief pause to see final state
+                screen.Exit();
+                break;
+            }
+        }
+    });
+
+    // Run UI loop (blocks until exit)
+    screen.Loop(main_component);
 
     // Wait for all threads to complete
     for (auto& t : threads) {
         t.join();
     }
+    monitor.join();
 
     auto end_time = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
 
-    if (!quiet) {
-        std::cerr << std::endl;  // Clear progress line
-    }
-
-    // Aggregate results
+    // Aggregate final results
     auto all_results = results.get_results();
-
-    // Sort by game_id for consistent output
     std::sort(all_results.begin(), all_results.end(),
               [](const GameReport& a, const GameReport& b) { return a.game_id < b.game_id; });
 
@@ -605,7 +1119,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Print final score
+    // Print final score to stdout
     std::cout << "\n========================================" << std::endl;
     std::cout << "Final Score (" << total_games << " games in " << elapsed << "s):" << std::endl;
     std::cout << "========================================" << std::endl;

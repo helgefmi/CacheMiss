@@ -10,6 +10,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Fetch FTXUI for terminal UI
+include(FetchContent)
+FetchContent_Declare(ftxui
+    GIT_REPOSITORY https://github.com/ArthurSonzogni/ftxui
+    GIT_TAG main
+)
+FetchContent_MakeAvailable(ftxui)
+
 # Default to RelWithDebInfo if not specified
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
@@ -60,9 +68,9 @@ add_executable(cachemiss
 )
 target_link_libraries(cachemiss cachemiss_core)
 
-# Match supervisor tool
+# Match supervisor tool (with FTXUI for TUI)
 add_executable(match tools/match.cpp)
-target_link_libraries(match cachemiss_core)
+target_link_libraries(match cachemiss_core ftxui::screen ftxui::dom ftxui::component)
 
 # PGN to EPD converter tool
 add_executable(pgn2epd tools/pgn2epd.cpp)
