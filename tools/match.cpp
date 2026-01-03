@@ -81,6 +81,14 @@ class Engine {
     pid_t child_pid;
     static int instance_counter;
     int instance_id;
+    int current_game_id = -1;  // Set by caller to include in logs
+
+    std::string log_prefix() const {
+        if (current_game_id >= 0) {
+            return "Engine[" + std::to_string(instance_id) + "] Game[" + std::to_string(current_game_id + 1) + "]";
+        }
+        return "Engine[" + std::to_string(instance_id) + "]";
+    }
 
 public:
     Engine(const std::string& engine_path) : path(engine_path), instance_id(++instance_counter) {
@@ -165,21 +173,20 @@ public:
         }
     }
 
+    void set_game_id(int game_id) { current_game_id = game_id; }
+
     void send(const std::string& cmd) {
         if (!to_engine) {
-            log_msg("Engine[" + std::to_string(instance_id) + "] SEND FAILED - closed: " + cmd);
+            log_msg(log_prefix() + " SEND FAILED - closed: " + cmd);
             throw std::runtime_error("Cannot send to closed engine " + path);
         }
-        // Only log important commands, not routine ones
-        if (cmd.find("go ") != 0 && cmd.find("position ") != 0 && cmd != "isready") {
-            log_msg("Engine[" + std::to_string(instance_id) + "] >> " + cmd);
-        }
+        log_msg(log_prefix() + " >> " + cmd);
         if (fprintf(to_engine, "%s\n", cmd.c_str()) < 0) {
-            log_msg("Engine[" + std::to_string(instance_id) + "] SEND FAILED - fprintf error");
+            log_msg(log_prefix() + " SEND FAILED - fprintf error");
             throw std::runtime_error("Failed to send to engine " + path);
         }
         if (fflush(to_engine) != 0) {
-            log_msg("Engine[" + std::to_string(instance_id) + "] SEND FAILED - flush error");
+            log_msg(log_prefix() + " SEND FAILED - flush error");
             throw std::runtime_error("Failed to flush to engine " + path);
         }
     }
@@ -190,10 +197,7 @@ public:
         if (newline_pos != std::string::npos) {
             std::string line = read_buffer.substr(0, newline_pos);
             read_buffer.erase(0, newline_pos + 1);
-            // Only log important messages, not info lines
-            if (line.find("info ") != 0) {
-                log_msg("Engine[" + std::to_string(instance_id) + "] << " + line);
-            }
+            log_msg(log_prefix() + " << " + line);
             return line;
         }
 
@@ -205,7 +209,7 @@ public:
                 std::chrono::steady_clock::now() - start_time).count();
             int remaining_ms = timeout_ms - static_cast<int>(elapsed);
             if (remaining_ms <= 0) {
-                log_msg("Engine[" + std::to_string(instance_id) + "] TIMEOUT after " + std::to_string(timeout_ms) + "ms");
+                log_msg(log_prefix() + " TIMEOUT after " + std::to_string(timeout_ms) + "ms");
                 throw std::runtime_error("Engine " + path + " timed out after " + std::to_string(timeout_ms) + "ms");
             }
 
@@ -215,7 +219,7 @@ public:
 
             int ret = poll(&pfd, 1, remaining_ms);
             if (ret < 0) {
-                log_msg("Engine[" + std::to_string(instance_id) + "] poll FAILED: " + strerror(errno));
+                log_msg(log_prefix() + " poll FAILED: " + strerror(errno));
                 throw std::runtime_error("poll() failed for engine " + path + ": " + strerror(errno));
             }
             if (ret == 0) {
@@ -225,11 +229,11 @@ public:
             // Check for errors
             if (!(pfd.revents & POLLIN)) {
                 if (pfd.revents & POLLHUP) {
-                    log_msg("Engine[" + std::to_string(instance_id) + "] POLLHUP - pipe closed");
+                    log_msg(log_prefix() + " POLLHUP - pipe closed");
                     throw std::runtime_error("Engine " + path + " closed pipe (crashed?)");
                 }
                 if (pfd.revents & (POLLERR | POLLNVAL)) {
-                    log_msg("Engine[" + std::to_string(instance_id) + "] POLLERR/POLLNVAL");
+                    log_msg(log_prefix() + " POLLERR/POLLNVAL");
                     throw std::runtime_error("Engine " + path + " pipe error");
                 }
             }
@@ -238,11 +242,11 @@ public:
             char buf[4096];
             ssize_t n = read(from_engine_fd, buf, sizeof(buf));
             if (n < 0) {
-                log_msg("Engine[" + std::to_string(instance_id) + "] read FAILED: " + strerror(errno));
+                log_msg(log_prefix() + " read FAILED: " + strerror(errno));
                 throw std::runtime_error("read() failed for engine " + path + ": " + strerror(errno));
             }
             if (n == 0) {
-                log_msg("Engine[" + std::to_string(instance_id) + "] EOF");
+                log_msg(log_prefix() + " EOF");
                 throw std::runtime_error("Engine " + path + " closed connection (EOF)");
             }
 
@@ -253,10 +257,7 @@ public:
             if (newline_pos != std::string::npos) {
                 std::string line = read_buffer.substr(0, newline_pos);
                 read_buffer.erase(0, newline_pos + 1);
-                // Only log important messages, not info lines (too verbose)
-                if (line.find("info ") != 0) {
-                    log_msg("Engine[" + std::to_string(instance_id) + "] << " + line);
-                }
+                log_msg(log_prefix() + " << " + line);
                 return line;
             }
             // No complete line yet, continue reading
@@ -797,7 +798,7 @@ Element render_moves(const std::vector<std::string>& moves, int highlight_index)
     return hflow(parts);
 }
 
-Element render_game_card(const GameDisplay& game, const std::string& engine1_name, const std::string& engine2_name, bool selected) {
+Element render_game_card(const GameDisplay& game, const std::string& engine1_name, const std::string& engine2_name, bool selected, int card_width) {
     // Header with game number and status
     std::string status;
     if (game.finished) {
@@ -821,9 +822,20 @@ Element render_game_card(const GameDisplay& game, const std::string& engine1_nam
 
     std::string header = "Game " + std::to_string(game.game_id + 1) + " [" + status + "]";
 
-    // Show which engine is which color
-    const std::string& white_name = game.engine1_is_white ? engine1_name : engine2_name;
-    const std::string& black_name = game.engine1_is_white ? engine2_name : engine1_name;
+    // Show which engine is which color - truncate names to fit
+    const std::string& white_path = game.engine1_is_white ? engine1_name : engine2_name;
+    const std::string& black_path = game.engine1_is_white ? engine2_name : engine1_name;
+    std::string white_name = white_path.substr(white_path.rfind('/') + 1);
+    std::string black_name = black_path.substr(black_path.rfind('/') + 1);
+
+    // Truncate engine names if too long (card_width - border(2) - "W:"(2) - padding)
+    int max_name_len = card_width - 6;
+    if ((int)white_name.length() > max_name_len) {
+        white_name = white_name.substr(0, max_name_len - 2) + "..";
+    }
+    if ((int)black_name.length() > max_name_len) {
+        black_name = black_name.substr(0, max_name_len - 2) + "..";
+    }
 
     // Determine which position and move to show
     int view_idx = game.view_move_index;
@@ -838,16 +850,19 @@ Element render_game_card(const GameDisplay& game, const std::string& engine1_nam
         move_info = "move " + std::to_string(view_idx + 1) + "/" + std::to_string(total_moves);
     }
 
+    // Inner width for content (excluding border)
+    int inner_width = card_width - 2;
+
     auto card = vbox({
         text(header) | bold,
-        hbox({text("W:") | dim, text(white_name.substr(white_name.rfind('/') + 1))}),
-        hbox({text("B:") | dim, text(black_name.substr(black_name.rfind('/') + 1))}),
+        hbox({text("W:") | dim, text(white_name)}),
+        hbox({text("B:") | dim, text(black_name)}),
         text(move_info) | dim,
         separator(),
         render_board(display_fen),
         separator(),
-        render_moves(game.moves, view_idx) | size(HEIGHT, LESS_THAN, 4),
-    });
+        render_moves(game.moves, view_idx) | size(WIDTH, EQUAL, inner_width) | size(HEIGHT, LESS_THAN, 4),
+    }) | size(WIDTH, EQUAL, inner_width);
 
     if (selected) {
         card = card | border | color(ftxui::Color::Yellow);
@@ -903,6 +918,10 @@ void worker_thread(
             Engine& black = task.engine1_is_white ? engine2 : engine1;
             const std::string& white_name = task.engine1_is_white ? engine1_path : engine2_path;
             const std::string& black_name = task.engine1_is_white ? engine2_path : engine1_path;
+
+            // Set game_id on both engines for logging
+            engine1.set_game_id(task.game_id);
+            engine2.set_game_id(task.game_id);
 
             // Callback to update TUI on each move
             // Note: UI refresh is handled by dedicated refresh thread (10Hz) to avoid event queue flooding
@@ -1111,11 +1130,17 @@ int main(int argc, char* argv[]) {
         // Help line
         Element help = text("Arrows=select  ,/.=move  ;/:=10moves  Home/End=first/last  q=quit") | dim | center;
 
-        // Calculate columns based on terminal width
+        // Calculate columns and card width based on terminal width
         int term_width = Terminal::Size().dimx;
         int term_height = Terminal::Size().dimy;
-        int game_width = 42;  // Width of each game card (board is 37 chars + borders)
-        cols = std::max(1, (term_width - 4) / game_width);
+        int min_card_width = 39;  // Minimum: board(35) + border(2) + padding(2)
+        int max_card_width = 50;  // Maximum reasonable width
+        int outer_padding = 4;    // Space for outer border
+
+        // Calculate how many columns fit, then divide space evenly
+        int available_width = term_width - outer_padding;
+        cols = std::max(1, available_width / min_card_width);
+        int card_width = std::min(max_card_width, available_width / cols);
 
         // Calculate visible rows (account for header, help, borders)
         int card_height = 22;  // Height of a card (board is 18 lines + header)
@@ -1146,7 +1171,7 @@ int main(int argc, char* argv[]) {
                 int idx = row * cols + c;
                 if (idx < num_games) {
                     bool is_selected = (idx == selected_game);
-                    row_elements.push_back(render_game_card(games[idx], engine1_path, engine2_path, is_selected) | flex);
+                    row_elements.push_back(render_game_card(games[idx], engine1_path, engine2_path, is_selected, card_width));
                 }
             }
             if (!row_elements.empty()) {
