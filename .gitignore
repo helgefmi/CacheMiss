@@ -4,3 +4,4 @@ builds/
 .cache/
 CLAUDE.md
 data/
+*.log

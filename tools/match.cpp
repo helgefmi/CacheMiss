@@ -21,6 +21,47 @@
 
 #include <unistd.h>
 #include <sys/wait.h>
+#include <poll.h>
+
+// ============================================================================
+// Debug logging
+// ============================================================================
+static std::mutex log_mutex;
+static std::ofstream log_file;
+static bool logging_enabled = false;
+
+void log_init(const std::string& filename) {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    log_file.open(filename, std::ios::out | std::ios::trunc);
+    logging_enabled = log_file.is_open();
+    if (logging_enabled) {
+        log_file << "=== Match log started ===" << std::endl;
+    }
+}
+
+void log_close() {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    if (log_file.is_open()) {
+        log_file << "=== Match log ended ===" << std::endl;
+        log_file.close();
+    }
+    logging_enabled = false;
+}
+
+void log_msg(const std::string& msg) {
+    if (!logging_enabled) return;
+    std::lock_guard<std::mutex> lock(log_mutex);
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+    auto time = std::chrono::system_clock::to_time_t(now);
+    struct tm tm_buf;
+    localtime_r(&time, &tm_buf);
+    char time_str[32];
+    strftime(time_str, sizeof(time_str), "%H:%M:%S", &tm_buf);
+    log_file << "[" << time_str << "." << std::setfill('0') << std::setw(3) << ms.count() << "] "
+             << "[tid:" << std::this_thread::get_id() << "] " << msg << std::endl;
+    log_file.flush();
+}
 
 // FTXUI for terminal UI
 #include <ftxui/component/component.hpp>
@@ -42,15 +83,18 @@ class Engine {
 
 public:
     Engine(const std::string& engine_path) : path(engine_path), instance_id(++instance_counter) {
-        // Create bidirectional pipe to engine
+        log_msg("Engine[" + std::to_string(instance_id) + "] creating: " + engine_path);
 
+        // Create bidirectional pipe to engine
         int to_child[2], from_child[2];
         if (pipe(to_child) < 0 || pipe(from_child) < 0) {
+            log_msg("Engine[" + std::to_string(instance_id) + "] FAILED to create pipes");
             throw std::runtime_error("Failed to create pipes");
         }
 
         pid_t pid = fork();
         if (pid < 0) {
+            log_msg("Engine[" + std::to_string(instance_id) + "] FAILED to fork");
             throw std::runtime_error("Failed to fork");
         }
 
@@ -68,21 +112,34 @@ public:
 
         // Parent process
         child_pid = pid;
+        log_msg("Engine[" + std::to_string(instance_id) + "] forked, child pid=" + std::to_string(pid));
         close(to_child[0]);
         close(from_child[1]);
         to_engine = fdopen(to_child[1], "w");
         from_engine = fdopen(from_child[0], "r");
 
         if (!to_engine || !from_engine) {
+            log_msg("Engine[" + std::to_string(instance_id) + "] FAILED to open streams");
             throw std::runtime_error("Failed to open engine streams");
         }
 
+        // CRITICAL: Use unbuffered mode for reading so poll() works correctly
+        // With buffered I/O, fgets() may read multiple lines into the FILE* buffer,
+        // leaving the kernel pipe empty, causing poll() to block forever.
+        setvbuf(from_engine, nullptr, _IONBF, 0);
+        setvbuf(to_engine, nullptr, _IOLBF, 0);  // Line buffered for writes is fine
+
         // Initialize UCI
+        log_msg("Engine[" + std::to_string(instance_id) + "] sending 'uci'");
         send("uci");
+        log_msg("Engine[" + std::to_string(instance_id) + "] waiting for 'uciok'");
         wait_for("uciok");
+        log_msg("Engine[" + std::to_string(instance_id) + "] got 'uciok'");
 
         send("isready");
+        log_msg("Engine[" + std::to_string(instance_id) + "] waiting for 'readyok'");
         wait_for("readyok");
+        log_msg("Engine[" + std::to_string(instance_id) + "] READY");
     }
 
     void set_hash(int mb) {
@@ -95,18 +152,68 @@ public:
         if (to_engine) {
             send("quit");
             fclose(to_engine);
+            to_engine = nullptr;
         }
         if (from_engine) {
             fclose(from_engine);
+            from_engine = nullptr;
+        }
+        // Reap the child process to avoid zombies
+        if (child_pid > 0) {
+            int status;
+            waitpid(child_pid, &status, 0);
         }
     }
 
     void send(const std::string& cmd) {
-        fprintf(to_engine, "%s\n", cmd.c_str());
-        fflush(to_engine);
+        if (!to_engine) {
+            log_msg("Engine[" + std::to_string(instance_id) + "] SEND FAILED - closed: " + cmd);
+            throw std::runtime_error("Cannot send to closed engine " + path);
+        }
+        log_msg("Engine[" + std::to_string(instance_id) + "] >> " + cmd);
+        if (fprintf(to_engine, "%s\n", cmd.c_str()) < 0) {
+            log_msg("Engine[" + std::to_string(instance_id) + "] SEND FAILED - fprintf error");
+            throw std::runtime_error("Failed to send to engine " + path);
+        }
+        if (fflush(to_engine) != 0) {
+            log_msg("Engine[" + std::to_string(instance_id) + "] SEND FAILED - flush error");
+            throw std::runtime_error("Failed to flush to engine " + path);
+        }
     }
 
-    std::string read_line() {
+    std::string read_line(int timeout_ms = 30000) {
+        // Use poll to wait for data with timeout
+        struct pollfd pfd;
+        pfd.fd = fileno(from_engine);
+        pfd.events = POLLIN;
+
+        log_msg("Engine[" + std::to_string(instance_id) + "] poll(timeout=" + std::to_string(timeout_ms) + ")...");
+        int ret = poll(&pfd, 1, timeout_ms);
+        if (ret < 0) {
+            log_msg("Engine[" + std::to_string(instance_id) + "] poll FAILED: " + strerror(errno));
+            throw std::runtime_error("poll() failed for engine " + path + ": " + strerror(errno));
+        }
+        if (ret == 0) {
+            log_msg("Engine[" + std::to_string(instance_id) + "] poll TIMEOUT after " + std::to_string(timeout_ms) + "ms");
+            throw std::runtime_error("Engine " + path + " timed out after " + std::to_string(timeout_ms) + "ms");
+        }
+        log_msg("Engine[" + std::to_string(instance_id) + "] poll returned " + std::to_string(ret) + ", revents=0x" +
+                ([](int r) { std::ostringstream ss; ss << std::hex << r; return ss.str(); })(pfd.revents));
+
+        // Check for errors, but only if there's no data to read
+        // (POLLHUP can be set along with POLLIN if there's data before hangup)
+        if (!(pfd.revents & POLLIN)) {
+            if (pfd.revents & POLLHUP) {
+                log_msg("Engine[" + std::to_string(instance_id) + "] POLLHUP - pipe closed");
+                throw std::runtime_error("Engine " + path + " closed pipe (crashed?)");
+            }
+            if (pfd.revents & (POLLERR | POLLNVAL)) {
+                log_msg("Engine[" + std::to_string(instance_id) + "] POLLERR/POLLNVAL");
+                throw std::runtime_error("Engine " + path + " pipe error");
+            }
+        }
+
+        log_msg("Engine[" + std::to_string(instance_id) + "] calling fgets...");
         char buffer[4096];
         if (fgets(buffer, sizeof(buffer), from_engine)) {
             // Remove trailing newline
@@ -114,9 +221,12 @@ public:
             if (len > 0 && buffer[len-1] == '\n') {
                 buffer[len-1] = '\0';
             }
+            log_msg("Engine[" + std::to_string(instance_id) + "] << " + std::string(buffer));
             return std::string(buffer);
         }
-        return "";
+        // EOF or error - engine likely crashed
+        log_msg("Engine[" + std::to_string(instance_id) + "] fgets returned NULL - EOF/error");
+        throw std::runtime_error("Engine " + path + " closed connection (crashed?)");
     }
 
     void wait_for(const std::string& expected) {
@@ -143,9 +253,10 @@ public:
 
         send("go movetime " + std::to_string(movetime_ms));
 
-        // Wait for bestmove
+        // Wait for bestmove with generous timeout (movetime + 10 seconds buffer)
+        int timeout = movetime_ms + 10000;
         while (true) {
-            std::string line = read_line();
+            std::string line = read_line(timeout);
             if (line.find("bestmove") == 0) {
                 // Parse "bestmove e2e4 ..."
                 std::istringstream iss(line);
@@ -716,21 +827,36 @@ void worker_thread(
     WorkQueue& work_queue,
     ResultsCollector& results,
     GameStateManager& state,
-    ScreenInteractive& screen
+    ScreenInteractive& screen,
+    std::atomic<bool>& fatal_error
 ) {
+    log_msg("Worker[" + std::to_string(thread_id) + "] started");
+
+    // Check if there's any work before creating expensive engine processes
+    if (work_queue.size() == 0) {
+        log_msg("Worker[" + std::to_string(thread_id) + "] no work available, exiting early");
+        return;
+    }
+
     try {
         // Each thread has its own engine instances
+        log_msg("Worker[" + std::to_string(thread_id) + "] creating engine1: " + engine1_path);
         Engine engine1(engine1_path);
+        log_msg("Worker[" + std::to_string(thread_id) + "] creating engine2: " + engine2_path);
         Engine engine2(engine2_path);
+        log_msg("Worker[" + std::to_string(thread_id) + "] both engines created");
 
         // Configure hash table size
         if (hash_mb > 0) {
+            log_msg("Worker[" + std::to_string(thread_id) + "] setting hash to " + std::to_string(hash_mb) + "MB");
             engine1.set_hash(hash_mb);
             engine2.set_hash(hash_mb);
         }
 
+        log_msg("Worker[" + std::to_string(thread_id) + "] entering game loop");
         GameTask task;
-        while (work_queue.pop(task)) {
+        while (!fatal_error.load() && work_queue.pop(task)) {
+            log_msg("Worker[" + std::to_string(thread_id) + "] got task: game_id=" + std::to_string(task.game_id));
             Engine& white = task.engine1_is_white ? engine1 : engine2;
             Engine& black = task.engine1_is_white ? engine2 : engine1;
             const std::string& white_name = task.engine1_is_white ? engine1_path : engine2_path;
@@ -743,22 +869,51 @@ void worker_thread(
                 screen.Post(Event::Custom);
             };
 
-            GameOutcome outcome = play_game(white, black, task.fen, movetime_ms, white_name, black_name, on_move);
+            try {
+                GameOutcome outcome = play_game(white, black, task.fen, movetime_ms, white_name, black_name, on_move);
 
-            // Mark game as finished in TUI state
-            state.finish_game(task.game_id, outcome.result, outcome.draw_reason);
-            screen.Post(Event::Custom);
+                // Mark game as finished in TUI state
+                state.finish_game(task.game_id, outcome.result, outcome.draw_reason);
+                screen.Post(Event::Custom);
 
-            GameReport report;
-            report.game_id = task.game_id;
-            report.outcome = outcome;
-            report.engine1_is_white = task.engine1_is_white;
-            report.fen = task.fen;
+                GameReport report;
+                report.game_id = task.game_id;
+                report.outcome = outcome;
+                report.engine1_is_white = task.engine1_is_white;
+                report.fen = task.fen;
 
-            results.add(std::move(report));
+                results.add(std::move(report));
+            } catch (const std::exception& e) {
+                // Game-level error (e.g., engine crashed mid-game)
+                // Mark as loss for the side whose engine crashed, but we can't tell which
+                // So mark as draw and continue
+                std::cerr << "\nGame " << task.game_id << " error: " << e.what() << std::endl;
+
+                GameOutcome outcome;
+                outcome.result = GameResult::Draw;
+                outcome.draw_reason = DrawReason::None;
+                outcome.num_moves = 0;
+
+                state.finish_game(task.game_id, outcome.result, outcome.draw_reason);
+                screen.Post(Event::Custom);
+
+                GameReport report;
+                report.game_id = task.game_id;
+                report.outcome = outcome;
+                report.engine1_is_white = task.engine1_is_white;
+                report.fen = task.fen;
+                results.add(std::move(report));
+
+                // Engine crashed, can't continue with this thread's engines
+                // Exit the loop to restart engines
+                break;
+            }
         }
     } catch (const std::exception& e) {
-        std::cerr << "\nThread " << thread_id << " error: " << e.what() << std::endl;
+        // Thread-level error (e.g., engine failed to start)
+        std::cerr << "\nThread " << thread_id << " fatal error: " << e.what() << std::endl;
+        fatal_error.store(true);
+        screen.Exit();
     }
 }
 
@@ -771,6 +926,7 @@ void print_usage(const char* prog) {
               << "  -games <n>       Games per position (default: 2)\n"
               << "  -threads <n>     Number of concurrent games (default: CPU count)\n"
               << "  -hash <mb>       Hash table size per engine (default: 512)\n"
+              << "  -log <file>      Enable verbose logging to file\n"
               << "\nControls:\n"
               << "  q/Esc            Quit\n"
               << "  PgUp/PgDn        Scroll up/down\n"
@@ -793,6 +949,7 @@ int main(int argc, char* argv[]) {
     int games_per_position = 2;
     int num_threads = std::thread::hardware_concurrency();
     int hash_mb = 512;
+    std::string log_filename;
 
     for (int i = 3; i < argc; ++i) {
         if (strcmp(argv[i], "-movetime") == 0 && i + 1 < argc) {
@@ -807,11 +964,21 @@ int main(int argc, char* argv[]) {
             num_threads = std::stoi(argv[++i]);
         } else if (strcmp(argv[i], "-hash") == 0 && i + 1 < argc) {
             hash_mb = std::stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-log") == 0 && i + 1 < argc) {
+            log_filename = argv[++i];
         } else {
             std::cerr << "Unknown option: " << argv[i] << std::endl;
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    // Initialize logging if requested
+    if (!log_filename.empty()) {
+        log_init(log_filename);
+        log_msg("Match starting: " + engine1_path + " vs " + engine2_path);
+        log_msg("Options: movetime=" + std::to_string(movetime_ms) + "ms, threads=" +
+                std::to_string(num_threads) + ", hash=" + std::to_string(hash_mb) + "MB");
     }
 
     if (num_threads < 1) num_threads = 1;
@@ -833,6 +1000,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Build work queue and initialize game state
+    log_msg("Building work queue from " + std::to_string(positions.size()) + " positions");
     WorkQueue work_queue;
     GameStateManager state;
     int game_id = 0;
@@ -844,11 +1012,20 @@ int main(int argc, char* argv[]) {
             task.game_id = game_id;
             work_queue.push(task);
             state.init_game(game_id, start_fen, task.engine1_is_white);
+            log_msg("Created game " + std::to_string(game_id) + ": " + start_fen.substr(0, 30) + "...");
             game_id++;
         }
     }
 
     int total_games = game_id;
+    log_msg("Total games to play: " + std::to_string(total_games));
+
+    // Don't spawn more threads than games - each thread creates 2 engine processes
+    if (num_threads > total_games) {
+        log_msg("Reducing threads from " + std::to_string(num_threads) + " to " + std::to_string(total_games));
+        num_threads = total_games;
+    }
+
     ResultsCollector results(total_games);
 
     // Extract short engine names for display
@@ -1051,29 +1228,59 @@ int main(int argc, char* argv[]) {
         return false;
     });
 
-    // Spawn worker threads
+    // Spawn worker threads (they will wait for screen_ready)
+    log_msg("Main: spawning " + std::to_string(num_threads) + " worker threads");
     auto start_time = std::chrono::steady_clock::now();
+    std::atomic<bool> fatal_error{false};
+    std::atomic<bool> screen_ready{false};
     std::vector<std::thread> threads;
     for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back(worker_thread, i, engine1_path, engine2_path,
-                            movetime_ms, hash_mb, std::ref(work_queue), std::ref(results),
-                            std::ref(state), std::ref(screen));
+        threads.emplace_back([&, i]() {
+            log_msg("Thread[" + std::to_string(i) + "] waiting for screen_ready");
+            // Wait for screen to be ready before starting
+            while (!screen_ready.load() && !fatal_error.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            log_msg("Thread[" + std::to_string(i) + "] screen_ready=" + std::to_string(screen_ready.load()) +
+                    ", fatal_error=" + std::to_string(fatal_error.load()));
+            if (!fatal_error.load()) {
+                worker_thread(i, engine1_path, engine2_path,
+                             movetime_ms, hash_mb, work_queue, results,
+                             state, screen, fatal_error);
+            }
+            log_msg("Thread[" + std::to_string(i) + "] exiting");
+        });
     }
 
-    // Monitor thread to exit when all games are done
+    // Monitor thread to exit when all games are done or on fatal error
     std::thread monitor([&] {
+        log_msg("Monitor thread started");
         while (true) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            if (results.get_completed() >= total_games) {
+            if (fatal_error.load()) {
+                log_msg("Monitor: fatal_error detected, exiting");
+                break;  // Exit already called by worker thread
+            }
+            int completed = results.get_completed();
+            if (completed >= total_games) {
+                log_msg("Monitor: all " + std::to_string(completed) + " games completed");
                 std::this_thread::sleep_for(std::chrono::seconds(1));  // Brief pause to see final state
                 screen.Exit();
                 break;
             }
         }
+        log_msg("Monitor thread exiting");
     });
 
-    // Run UI loop (blocks until exit)
+    // Signal that screen is ready via Post (runs after loop starts)
+    log_msg("Main: calling screen.Post to set screen_ready");
+    screen.Post([&] {
+        log_msg("Main: screen.Post callback - setting screen_ready=true");
+        screen_ready.store(true);
+    });
+    log_msg("Main: entering screen.Loop()");
     screen.Loop(main_component);
+    log_msg("Main: screen.Loop() returned");
 
     // Wait for all threads to complete
     for (auto& t : threads) {
@@ -1132,5 +1339,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  " << engine2_path << ": " << score2 << "/" << total_games
               << " (" << pct2 << "%) [W:" << wins2 << " D:" << draws << " L:" << wins1 << "]" << std::endl;
 
+    log_msg("Match finished");
+    log_close();
     return 0;
 }
