@@ -887,7 +887,8 @@ void worker_thread(
     ResultsCollector& results,
     GameStateManager& state,
     ScreenInteractive& screen,
-    std::atomic<bool>& fatal_error
+    std::atomic<bool>& fatal_error,
+    std::atomic<bool>& all_done
 ) {
     log_msg("Worker[" + std::to_string(thread_id) + "] started");
 
@@ -913,7 +914,7 @@ void worker_thread(
         }
 
         GameTask task;
-        while (!fatal_error.load() && work_queue.pop(task)) {
+        while (!fatal_error.load() && !all_done.load() && work_queue.pop(task)) {
             Engine& white = task.engine1_is_white ? engine1 : engine2;
             Engine& black = task.engine1_is_white ? engine2 : engine1;
             const std::string& white_name = task.engine1_is_white ? engine1_path : engine2_path;
@@ -1125,7 +1126,15 @@ int main(int argc, char* argv[]) {
                   << " [W:" << w1 << " D:" << d << " L:" << w2
                   << " = " << std::fixed << std::setprecision(1) << pct << "%]";
 
+        bool all_complete = (finished >= total_games);
+        if (all_complete) {
+            header_ss << "  COMPLETE";
+        }
+
         Element header = text(header_ss.str()) | bold | center;
+        if (all_complete) {
+            header = header | color(ftxui::Color::Green);
+        }
 
         // Help line
         Element help = text("Arrows=select  ,/.=move  ;/:=10moves  Home/End=first/last  q=quit") | dim | center;
@@ -1312,10 +1321,10 @@ int main(int argc, char* argv[]) {
             }
             log_msg("Thread[" + std::to_string(i) + "] screen_ready=" + std::to_string(screen_ready.load()) +
                     ", fatal_error=" + std::to_string(fatal_error.load()));
-            if (!fatal_error.load()) {
+            if (!fatal_error.load() && !all_done.load()) {
                 worker_thread(i, engine1_path, engine2_path,
                              movetime_ms, hash_mb, work_queue, results,
-                             state, screen, fatal_error);
+                             state, screen, fatal_error, all_done);
             }
             log_msg("Thread[" + std::to_string(i) + "] exiting");
         });
@@ -1332,23 +1341,11 @@ int main(int argc, char* argv[]) {
         log_msg("Refresh thread exiting");
     });
 
-    // Monitor thread to exit when all games are done or on fatal error
+    // Monitor thread - just waits for exit signal (no longer auto-exits when games complete)
     std::thread monitor([&] {
         log_msg("Monitor thread started");
-        while (true) {
+        while (!all_done.load() && !fatal_error.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            if (fatal_error.load() || all_done.load()) {
-                log_msg("Monitor: exit signal detected");
-                break;
-            }
-            int completed = results.get_completed();
-            if (completed >= total_games) {
-                log_msg("Monitor: all " + std::to_string(completed) + " games completed");
-                std::this_thread::sleep_for(std::chrono::seconds(1));  // Brief pause to see final state
-                all_done.store(true);
-                screen.Exit();
-                break;
-            }
         }
         log_msg("Monitor thread exiting");
     });
