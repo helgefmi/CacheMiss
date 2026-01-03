@@ -77,5 +77,5 @@ add_executable(pgn2epd tools/pgn2epd.cpp)
 target_link_libraries(pgn2epd cachemiss_core)
 
 # Magic bitboard generator (standalone tool)
-add_executable(gen_magics src/gen_magics.cpp)
+add_executable(gen_magics tools/gen_magics.cpp)
 target_include_directories(gen_magics PRIVATE src)
