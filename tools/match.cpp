@@ -74,7 +74,8 @@ using namespace ftxui;
 // UCI Engine wrapper - manages subprocess communication
 class Engine {
     FILE* to_engine;
-    FILE* from_engine;
+    int from_engine_fd;  // Raw file descriptor for reading (no FILE* buffering issues)
+    std::string read_buffer;  // Our own line buffer
     std::string name;
     std::string path;
     pid_t child_pid;
@@ -116,18 +117,14 @@ public:
         close(to_child[0]);
         close(from_child[1]);
         to_engine = fdopen(to_child[1], "w");
-        from_engine = fdopen(from_child[0], "r");
+        from_engine_fd = from_child[0];  // Keep raw fd for reading
 
-        if (!to_engine || !from_engine) {
+        if (!to_engine || from_engine_fd < 0) {
             log_msg("Engine[" + std::to_string(instance_id) + "] FAILED to open streams");
             throw std::runtime_error("Failed to open engine streams");
         }
 
-        // CRITICAL: Use unbuffered mode for reading so poll() works correctly
-        // With buffered I/O, fgets() may read multiple lines into the FILE* buffer,
-        // leaving the kernel pipe empty, causing poll() to block forever.
-        setvbuf(from_engine, nullptr, _IONBF, 0);
-        setvbuf(to_engine, nullptr, _IOLBF, 0);  // Line buffered for writes is fine
+        setvbuf(to_engine, nullptr, _IOLBF, 0);  // Line buffered for writes
 
         // Initialize UCI
         log_msg("Engine[" + std::to_string(instance_id) + "] sending 'uci'");
@@ -149,14 +146,17 @@ public:
     }
 
     ~Engine() {
+        // IMPORTANT: Destructors must never throw exceptions
         if (to_engine) {
-            send("quit");
+            // Try to send quit gracefully, ignore any errors
+            fprintf(to_engine, "quit\n");
+            fflush(to_engine);
             fclose(to_engine);
             to_engine = nullptr;
         }
-        if (from_engine) {
-            fclose(from_engine);
-            from_engine = nullptr;
+        if (from_engine_fd >= 0) {
+            close(from_engine_fd);
+            from_engine_fd = -1;
         }
         // Reap the child process to avoid zombies
         if (child_pid > 0) {
@@ -170,7 +170,10 @@ public:
             log_msg("Engine[" + std::to_string(instance_id) + "] SEND FAILED - closed: " + cmd);
             throw std::runtime_error("Cannot send to closed engine " + path);
         }
-        log_msg("Engine[" + std::to_string(instance_id) + "] >> " + cmd);
+        // Only log important commands, not routine ones
+        if (cmd.find("go ") != 0 && cmd.find("position ") != 0 && cmd != "isready") {
+            log_msg("Engine[" + std::to_string(instance_id) + "] >> " + cmd);
+        }
         if (fprintf(to_engine, "%s\n", cmd.c_str()) < 0) {
             log_msg("Engine[" + std::to_string(instance_id) + "] SEND FAILED - fprintf error");
             throw std::runtime_error("Failed to send to engine " + path);
@@ -182,51 +185,82 @@ public:
     }
 
     std::string read_line(int timeout_ms = 30000) {
-        // Use poll to wait for data with timeout
-        struct pollfd pfd;
-        pfd.fd = fileno(from_engine);
-        pfd.events = POLLIN;
-
-        log_msg("Engine[" + std::to_string(instance_id) + "] poll(timeout=" + std::to_string(timeout_ms) + ")...");
-        int ret = poll(&pfd, 1, timeout_ms);
-        if (ret < 0) {
-            log_msg("Engine[" + std::to_string(instance_id) + "] poll FAILED: " + strerror(errno));
-            throw std::runtime_error("poll() failed for engine " + path + ": " + strerror(errno));
-        }
-        if (ret == 0) {
-            log_msg("Engine[" + std::to_string(instance_id) + "] poll TIMEOUT after " + std::to_string(timeout_ms) + "ms");
-            throw std::runtime_error("Engine " + path + " timed out after " + std::to_string(timeout_ms) + "ms");
-        }
-        log_msg("Engine[" + std::to_string(instance_id) + "] poll returned " + std::to_string(ret) + ", revents=0x" +
-                ([](int r) { std::ostringstream ss; ss << std::hex << r; return ss.str(); })(pfd.revents));
-
-        // Check for errors, but only if there's no data to read
-        // (POLLHUP can be set along with POLLIN if there's data before hangup)
-        if (!(pfd.revents & POLLIN)) {
-            if (pfd.revents & POLLHUP) {
-                log_msg("Engine[" + std::to_string(instance_id) + "] POLLHUP - pipe closed");
-                throw std::runtime_error("Engine " + path + " closed pipe (crashed?)");
+        // Check if we already have a complete line in the buffer
+        size_t newline_pos = read_buffer.find('\n');
+        if (newline_pos != std::string::npos) {
+            std::string line = read_buffer.substr(0, newline_pos);
+            read_buffer.erase(0, newline_pos + 1);
+            // Only log important messages, not info lines
+            if (line.find("info ") != 0) {
+                log_msg("Engine[" + std::to_string(instance_id) + "] << " + line);
             }
-            if (pfd.revents & (POLLERR | POLLNVAL)) {
-                log_msg("Engine[" + std::to_string(instance_id) + "] POLLERR/POLLNVAL");
-                throw std::runtime_error("Engine " + path + " pipe error");
-            }
+            return line;
         }
 
-        log_msg("Engine[" + std::to_string(instance_id) + "] calling fgets...");
-        char buffer[4096];
-        if (fgets(buffer, sizeof(buffer), from_engine)) {
-            // Remove trailing newline
-            size_t len = strlen(buffer);
-            if (len > 0 && buffer[len-1] == '\n') {
-                buffer[len-1] = '\0';
+        // Need to read more data
+        auto start_time = std::chrono::steady_clock::now();
+        while (true) {
+            // Calculate remaining timeout
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start_time).count();
+            int remaining_ms = timeout_ms - static_cast<int>(elapsed);
+            if (remaining_ms <= 0) {
+                log_msg("Engine[" + std::to_string(instance_id) + "] TIMEOUT after " + std::to_string(timeout_ms) + "ms");
+                throw std::runtime_error("Engine " + path + " timed out after " + std::to_string(timeout_ms) + "ms");
             }
-            log_msg("Engine[" + std::to_string(instance_id) + "] << " + std::string(buffer));
-            return std::string(buffer);
+
+            struct pollfd pfd;
+            pfd.fd = from_engine_fd;
+            pfd.events = POLLIN;
+
+            int ret = poll(&pfd, 1, remaining_ms);
+            if (ret < 0) {
+                log_msg("Engine[" + std::to_string(instance_id) + "] poll FAILED: " + strerror(errno));
+                throw std::runtime_error("poll() failed for engine " + path + ": " + strerror(errno));
+            }
+            if (ret == 0) {
+                continue;  // Timeout, but check remaining time
+            }
+
+            // Check for errors
+            if (!(pfd.revents & POLLIN)) {
+                if (pfd.revents & POLLHUP) {
+                    log_msg("Engine[" + std::to_string(instance_id) + "] POLLHUP - pipe closed");
+                    throw std::runtime_error("Engine " + path + " closed pipe (crashed?)");
+                }
+                if (pfd.revents & (POLLERR | POLLNVAL)) {
+                    log_msg("Engine[" + std::to_string(instance_id) + "] POLLERR/POLLNVAL");
+                    throw std::runtime_error("Engine " + path + " pipe error");
+                }
+            }
+
+            // Read available data
+            char buf[4096];
+            ssize_t n = read(from_engine_fd, buf, sizeof(buf));
+            if (n < 0) {
+                log_msg("Engine[" + std::to_string(instance_id) + "] read FAILED: " + strerror(errno));
+                throw std::runtime_error("read() failed for engine " + path + ": " + strerror(errno));
+            }
+            if (n == 0) {
+                log_msg("Engine[" + std::to_string(instance_id) + "] EOF");
+                throw std::runtime_error("Engine " + path + " closed connection (EOF)");
+            }
+
+            read_buffer.append(buf, n);
+
+            // Check for complete line
+            newline_pos = read_buffer.find('\n');
+            if (newline_pos != std::string::npos) {
+                std::string line = read_buffer.substr(0, newline_pos);
+                read_buffer.erase(0, newline_pos + 1);
+                // Only log important messages, not info lines (too verbose)
+                if (line.find("info ") != 0) {
+                    log_msg("Engine[" + std::to_string(instance_id) + "] << " + line);
+                }
+                return line;
+            }
+            // No complete line yet, continue reading
         }
-        // EOF or error - engine likely crashed
-        log_msg("Engine[" + std::to_string(instance_id) + "] fgets returned NULL - EOF/error");
-        throw std::runtime_error("Engine " + path + " closed connection (crashed?)");
     }
 
     void wait_for(const std::string& expected) {
@@ -433,11 +467,21 @@ GameOutcome play_game(Engine& white, Engine& black, const std::string& start_fen
         Engine& current = (board.turn == ::Color::White) ? white : black;
         std::string uci_move = current.get_bestmove(start_fen, move_history, movetime_ms);
 
+        // Validate move format (should be 4-5 chars: e2e4 or e7e8q)
+        if (uci_move.length() < 4 || uci_move.length() > 5) {
+            const std::string& engine_name = (board.turn == ::Color::White) ? white_name : black_name;
+            log_msg("ERROR: Malformed move '" + uci_move + "' (len=" + std::to_string(uci_move.length()) +
+                    ") from " + engine_name);
+            outcome.result = (board.turn == ::Color::White) ? GameResult::BlackWin : GameResult::WhiteWin;
+            break;
+        }
+
         // Apply move
         Move32 move = parse_uci_move(uci_move, board);
         if (move.data == 0) {
             const std::string& engine_name = (board.turn == ::Color::White) ? white_name : black_name;
-            std::cerr << "Error: Invalid move '" << uci_move << "' from " << engine_name << std::endl;
+            log_msg("ERROR: Invalid move '" + uci_move + "' from " + engine_name +
+                    " in position " + board.to_fen());
             outcome.result = (board.turn == ::Color::White) ? GameResult::BlackWin : GameResult::WhiteWin;
             break;
         }
@@ -853,28 +897,26 @@ void worker_thread(
             engine2.set_hash(hash_mb);
         }
 
-        log_msg("Worker[" + std::to_string(thread_id) + "] entering game loop");
         GameTask task;
         while (!fatal_error.load() && work_queue.pop(task)) {
-            log_msg("Worker[" + std::to_string(thread_id) + "] got task: game_id=" + std::to_string(task.game_id));
             Engine& white = task.engine1_is_white ? engine1 : engine2;
             Engine& black = task.engine1_is_white ? engine2 : engine1;
             const std::string& white_name = task.engine1_is_white ? engine1_path : engine2_path;
             const std::string& black_name = task.engine1_is_white ? engine2_path : engine1_path;
 
             // Callback to update TUI on each move
+            // Note: UI refresh is handled by dedicated refresh thread (10Hz) to avoid event queue flooding
             int game_id = task.game_id;
-            auto on_move = [&state, &screen, game_id](int, const std::string& fen, const std::vector<std::string>& moves) {
+            auto on_move = [&state, game_id](int, const std::string& fen, const std::vector<std::string>& moves) {
                 state.update_game(game_id, fen, moves);
-                screen.Post(Event::Custom);
             };
 
             try {
                 GameOutcome outcome = play_game(white, black, task.fen, movetime_ms, white_name, black_name, on_move);
 
                 // Mark game as finished in TUI state
+                // Note: UI refresh is handled by dedicated refresh thread
                 state.finish_game(task.game_id, outcome.result, outcome.draw_reason);
-                screen.Post(Event::Custom);
 
                 GameReport report;
                 report.game_id = task.game_id;
@@ -895,7 +937,6 @@ void worker_thread(
                 outcome.num_moves = 0;
 
                 state.finish_game(task.game_id, outcome.result, outcome.draw_reason);
-                screen.Post(Event::Custom);
 
                 GameReport report;
                 report.game_id = task.game_id;
@@ -1012,7 +1053,6 @@ int main(int argc, char* argv[]) {
             task.game_id = game_id;
             work_queue.push(task);
             state.init_game(game_id, start_fen, task.engine1_is_white);
-            log_msg("Created game " + std::to_string(game_id) + ": " + start_fen.substr(0, 30) + "...");
             game_id++;
         }
     }
@@ -1043,6 +1083,10 @@ int main(int argc, char* argv[]) {
     int selected_game = 0;     // Currently selected game card
     int scroll_row = 0;        // First visible row
     int cols = 1;              // Columns (computed in renderer)
+
+    // Shared flags for thread coordination
+    std::atomic<bool> fatal_error{false};
+    std::atomic<bool> all_done{false};
 
     // Main UI component
     auto main_component = Renderer([&] {
@@ -1134,6 +1178,7 @@ int main(int argc, char* argv[]) {
         if (num_games == 0) num_games = total_games;
 
         if (event == Event::Character('q') || event == Event::Escape) {
+            all_done.store(true);  // Signal refresh thread to exit
             screen.Exit();
             return true;
         }
@@ -1231,7 +1276,6 @@ int main(int argc, char* argv[]) {
     // Spawn worker threads (they will wait for screen_ready)
     log_msg("Main: spawning " + std::to_string(num_threads) + " worker threads");
     auto start_time = std::chrono::steady_clock::now();
-    std::atomic<bool> fatal_error{false};
     std::atomic<bool> screen_ready{false};
     std::vector<std::thread> threads;
     for (int i = 0; i < num_threads; ++i) {
@@ -1252,19 +1296,31 @@ int main(int argc, char* argv[]) {
         });
     }
 
+    // Dedicated UI refresh thread - posts at fixed 10Hz rate to avoid event queue flooding
+    // This replaces per-game screen.Post() calls from workers which could overwhelm the UI
+    std::thread refresh_thread([&] {
+        log_msg("Refresh thread started");
+        while (!all_done.load() && !fatal_error.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            screen.Post(Event::Custom);
+        }
+        log_msg("Refresh thread exiting");
+    });
+
     // Monitor thread to exit when all games are done or on fatal error
     std::thread monitor([&] {
         log_msg("Monitor thread started");
         while (true) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            if (fatal_error.load()) {
-                log_msg("Monitor: fatal_error detected, exiting");
-                break;  // Exit already called by worker thread
+            if (fatal_error.load() || all_done.load()) {
+                log_msg("Monitor: exit signal detected");
+                break;
             }
             int completed = results.get_completed();
             if (completed >= total_games) {
                 log_msg("Monitor: all " + std::to_string(completed) + " games completed");
                 std::this_thread::sleep_for(std::chrono::seconds(1));  // Brief pause to see final state
+                all_done.store(true);
                 screen.Exit();
                 break;
             }
@@ -1286,6 +1342,7 @@ int main(int argc, char* argv[]) {
     for (auto& t : threads) {
         t.join();
     }
+    refresh_thread.join();
     monitor.join();
 
     auto end_time = std::chrono::steady_clock::now();
