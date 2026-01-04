@@ -50,9 +50,12 @@ constexpr Bitboard WHITE_OOO_PATH = (1ULL << 1) | (1ULL << C1) | (1ULL << D1);  
 constexpr Bitboard BLACK_OO_PATH  = (1ULL << F8) | (1ULL << G8);
 constexpr Bitboard BLACK_OOO_PATH = (1ULL << 57) | (1ULL << C8) | (1ULL << D8); // b8, c8, d8
 
-template <Color turn>
+template <Color turn, MoveType type>
 MoveList generate_moves(const Board& board) {
     MoveList moves;
+
+    constexpr bool gen_noisy = (type == MoveType::All || type == MoveType::Noisy);
+    constexpr bool gen_quiet = (type == MoveType::All || type == MoveType::Quiet);
 
     const Bitboard not_occupied = ~board.all_occupied;
     const Bitboard enemy_occupied = board.occupied[(int)turn ^ 1];
@@ -66,29 +69,31 @@ MoveList generate_moves(const Board& board) {
     Bitboard promoting_pawns = pawns_bb & PROMOTING_RANK;
     Bitboard normal_pawns = pawns_bb & ~PROMOTING_RANK;
 
-    // Promoting pawns (no double moves, no en passant possible)
-    for (Bitboard bb = promoting_pawns; bb; bb &= bb - 1) {
-        int from_sq = lsb_index(bb);
+    // Promoting pawns - all promotions are noisy (tactical moves)
+    if constexpr (gen_noisy) {
+        for (Bitboard bb = promoting_pawns; bb; bb &= bb - 1) {
+            int from_sq = lsb_index(bb);
 
-        // Push promotions
-        Bitboard single_move = PAWN_MOVES_ONE[(int)turn][from_sq] & not_occupied;
-        if (single_move) {
-            int to_sq = lsb_index(single_move);
-            moves.add(Move32(from_sq, to_sq, Piece::Queen));
-            moves.add(Move32(from_sq, to_sq, Piece::Rook));
-            moves.add(Move32(from_sq, to_sq, Piece::Bishop));
-            moves.add(Move32(from_sq, to_sq, Piece::Knight));
-        }
+            // Push promotions
+            Bitboard single_move = PAWN_MOVES_ONE[(int)turn][from_sq] & not_occupied;
+            if (single_move) {
+                int to_sq = lsb_index(single_move);
+                moves.add(Move32(from_sq, to_sq, Piece::Queen));
+                moves.add(Move32(from_sq, to_sq, Piece::Rook));
+                moves.add(Move32(from_sq, to_sq, Piece::Bishop));
+                moves.add(Move32(from_sq, to_sq, Piece::Knight));
+            }
 
-        // Capture promotions
-        Bitboard captures = PAWN_ATTACKS[(int)turn][from_sq] & enemy_occupied;
-        for (Bitboard cap_bb = captures; cap_bb; cap_bb &= cap_bb - 1) {
-            int to_sq = lsb_index(cap_bb);
-            Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.add(Move32(from_sq, to_sq, Piece::Queen, captured_piece));
-            moves.add(Move32(from_sq, to_sq, Piece::Rook, captured_piece));
-            moves.add(Move32(from_sq, to_sq, Piece::Bishop, captured_piece));
-            moves.add(Move32(from_sq, to_sq, Piece::Knight, captured_piece));
+            // Capture promotions
+            Bitboard captures = PAWN_ATTACKS[(int)turn][from_sq] & enemy_occupied;
+            for (Bitboard cap_bb = captures; cap_bb; cap_bb &= cap_bb - 1) {
+                int to_sq = lsb_index(cap_bb);
+                Piece captured_piece = board.pieces_on_square[to_sq];
+                moves.add(Move32(from_sq, to_sq, Piece::Queen, captured_piece));
+                moves.add(Move32(from_sq, to_sq, Piece::Rook, captured_piece));
+                moves.add(Move32(from_sq, to_sq, Piece::Bishop, captured_piece));
+                moves.add(Move32(from_sq, to_sq, Piece::Knight, captured_piece));
+            }
         }
     }
 
@@ -100,131 +105,178 @@ MoveList generate_moves(const Board& board) {
     for (Bitboard bb = normal_pawns; bb; bb &= bb - 1) {
         int from_sq = lsb_index(bb);
 
-        // Single push
-        Bitboard single_move = PAWN_MOVES_ONE[(int)turn][from_sq] & not_occupied;
-        if (single_move) {
-            int to_sq = lsb_index(single_move);
-            moves.add(Move32(from_sq, to_sq));
+        // Single and double pushes are quiet
+        if constexpr (gen_quiet) {
+            Bitboard single_move = PAWN_MOVES_ONE[(int)turn][from_sq] & not_occupied;
+            if (single_move) {
+                int to_sq = lsb_index(single_move);
+                moves.add(Move32(from_sq, to_sq));
 
-            // Double push
-            Bitboard double_move = PAWN_MOVES_TWO[(int)turn][from_sq] & not_occupied;
-            if (double_move) {
-                int to_sq_double = lsb_index(double_move);
-                moves.add(Move32(from_sq, to_sq_double));
+                // Double push
+                Bitboard double_move = PAWN_MOVES_TWO[(int)turn][from_sq] & not_occupied;
+                if (double_move) {
+                    int to_sq_double = lsb_index(double_move);
+                    moves.add(Move32(from_sq, to_sq_double));
+                }
             }
         }
 
-        // Captures (including en passant)
-        Bitboard captures = PAWN_ATTACKS[(int)turn][from_sq] & (enemy_occupied | ep_bb);
-        for (Bitboard cap_bb = captures; cap_bb; cap_bb &= cap_bb - 1) {
-            int to_sq = lsb_index(cap_bb);
-            bool is_ep = square_bb(to_sq) & ep_bb;
-            Piece captured_piece = is_ep ? Piece::Pawn : board.pieces_on_square[to_sq];
-            Move32 m(from_sq, to_sq, Piece::None, captured_piece);
-            if (is_ep) m.set_en_passant();
-            moves.add(m);
+        // Captures (including en passant) are noisy
+        if constexpr (gen_noisy) {
+            Bitboard captures = PAWN_ATTACKS[(int)turn][from_sq] & (enemy_occupied | ep_bb);
+            for (Bitboard cap_bb = captures; cap_bb; cap_bb &= cap_bb - 1) {
+                int to_sq = lsb_index(cap_bb);
+                bool is_ep = square_bb(to_sq) & ep_bb;
+                Piece captured_piece = is_ep ? Piece::Pawn : board.pieces_on_square[to_sq];
+                Move32 m(from_sq, to_sq, Piece::None, captured_piece);
+                if (is_ep) m.set_en_passant();
+                moves.add(m);
+            }
         }
     }
 
+    // Knights - captures are noisy, non-captures are quiet
     Bitboard knights_bb = board.pieces[(int)turn][(int)Piece::Knight];
     for (Bitboard from_bb = knights_bb; from_bb; from_bb &= from_bb - 1) {
         int from_sq = lsb_index(from_bb);
-        Bitboard knight_moves = KNIGHT_MOVES[from_sq] & (~board.occupied[(int)turn]);
-        for (Bitboard to_bb = knight_moves; to_bb; to_bb &= to_bb - 1) {
-            int to_sq = lsb_index(to_bb);
-            Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.add(Move32(from_sq, to_sq, Piece::None, captured_piece));
+        Bitboard targets = KNIGHT_MOVES[from_sq] & (~board.occupied[(int)turn]);
+        if constexpr (gen_noisy) {
+            for (Bitboard to_bb = targets & enemy_occupied; to_bb; to_bb &= to_bb - 1) {
+                int to_sq = lsb_index(to_bb);
+                moves.add(Move32(from_sq, to_sq, Piece::None, board.pieces_on_square[to_sq]));
+            }
+        }
+        if constexpr (gen_quiet) {
+            for (Bitboard to_bb = targets & not_occupied; to_bb; to_bb &= to_bb - 1) {
+                int to_sq = lsb_index(to_bb);
+                moves.add(Move32(from_sq, to_sq));
+            }
         }
     }
 
+    // Rooks
     Bitboard rooks_bb = board.pieces[(int)turn][(int)Piece::Rook];
     for (Bitboard from_bb = rooks_bb; from_bb; from_bb &= from_bb - 1) {
         int from_sq = lsb_index(from_bb);
-        Bitboard rook_moves = get_rook_attacks(from_sq, board.all_occupied) & (~board.occupied[(int)turn]);
-        for (Bitboard to_bb = rook_moves; to_bb; to_bb &= to_bb - 1) {
-            int to_sq = lsb_index(to_bb);
-            Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.add(Move32(from_sq, to_sq, Piece::None, captured_piece));
+        Bitboard targets = get_rook_attacks(from_sq, board.all_occupied) & (~board.occupied[(int)turn]);
+        if constexpr (gen_noisy) {
+            for (Bitboard to_bb = targets & enemy_occupied; to_bb; to_bb &= to_bb - 1) {
+                int to_sq = lsb_index(to_bb);
+                moves.add(Move32(from_sq, to_sq, Piece::None, board.pieces_on_square[to_sq]));
+            }
+        }
+        if constexpr (gen_quiet) {
+            for (Bitboard to_bb = targets & not_occupied; to_bb; to_bb &= to_bb - 1) {
+                int to_sq = lsb_index(to_bb);
+                moves.add(Move32(from_sq, to_sq));
+            }
         }
     }
 
+    // Bishops
     Bitboard bishops_bb = board.pieces[(int)turn][(int)Piece::Bishop];
     for (Bitboard from_bb = bishops_bb; from_bb; from_bb &= from_bb - 1) {
         int from_sq = lsb_index(from_bb);
-        Bitboard bishop_moves = get_bishop_attacks(from_sq, board.all_occupied) & (~board.occupied[(int)turn]);
-        for (Bitboard to_bb = bishop_moves; to_bb; to_bb &= to_bb - 1) {
-            int to_sq = lsb_index(to_bb);
-            Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.add(Move32(from_sq, to_sq, Piece::None, captured_piece));
+        Bitboard targets = get_bishop_attacks(from_sq, board.all_occupied) & (~board.occupied[(int)turn]);
+        if constexpr (gen_noisy) {
+            for (Bitboard to_bb = targets & enemy_occupied; to_bb; to_bb &= to_bb - 1) {
+                int to_sq = lsb_index(to_bb);
+                moves.add(Move32(from_sq, to_sq, Piece::None, board.pieces_on_square[to_sq]));
+            }
+        }
+        if constexpr (gen_quiet) {
+            for (Bitboard to_bb = targets & not_occupied; to_bb; to_bb &= to_bb - 1) {
+                int to_sq = lsb_index(to_bb);
+                moves.add(Move32(from_sq, to_sq));
+            }
         }
     }
 
+    // Queens
     Bitboard queens_bb = board.pieces[(int)turn][(int)Piece::Queen];
     for (Bitboard from_bb = queens_bb; from_bb; from_bb &= from_bb - 1) {
         int from_sq = lsb_index(from_bb);
-        Bitboard queen_moves = get_queen_attacks(from_sq, board.all_occupied) & (~board.occupied[(int)turn]);
-        for (Bitboard to_bb = queen_moves; to_bb; to_bb &= to_bb - 1) {
-            int to_sq = lsb_index(to_bb);
-            Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.add(Move32(from_sq, to_sq, Piece::None, captured_piece));
+        Bitboard targets = get_queen_attacks(from_sq, board.all_occupied) & (~board.occupied[(int)turn]);
+        if constexpr (gen_noisy) {
+            for (Bitboard to_bb = targets & enemy_occupied; to_bb; to_bb &= to_bb - 1) {
+                int to_sq = lsb_index(to_bb);
+                moves.add(Move32(from_sq, to_sq, Piece::None, board.pieces_on_square[to_sq]));
+            }
+        }
+        if constexpr (gen_quiet) {
+            for (Bitboard to_bb = targets & not_occupied; to_bb; to_bb &= to_bb - 1) {
+                int to_sq = lsb_index(to_bb);
+                moves.add(Move32(from_sq, to_sq));
+            }
         }
     }
 
+    // King
     {
         Bitboard king_bb = board.pieces[(int)turn][(int)Piece::King];
         int from_sq = lsb_index(king_bb);
-        Bitboard king_moves = KING_MOVES[from_sq] & (~board.occupied[(int)turn]);
-        for (Bitboard to_bb = king_moves; to_bb; to_bb &= to_bb - 1) {
-            int to_sq = lsb_index(to_bb);
-            Piece captured_piece = board.pieces_on_square[to_sq];
-            moves.add(Move32(from_sq, to_sq, Piece::None, captured_piece));
+        Bitboard targets = KING_MOVES[from_sq] & (~board.occupied[(int)turn]);
+
+        if constexpr (gen_noisy) {
+            for (Bitboard to_bb = targets & enemy_occupied; to_bb; to_bb &= to_bb - 1) {
+                int to_sq = lsb_index(to_bb);
+                moves.add(Move32(from_sq, to_sq, Piece::None, board.pieces_on_square[to_sq]));
+            }
+        }
+        if constexpr (gen_quiet) {
+            for (Bitboard to_bb = targets & not_occupied; to_bb; to_bb &= to_bb - 1) {
+                int to_sq = lsb_index(to_bb);
+                moves.add(Move32(from_sq, to_sq));
+            }
         }
 
-        // Castling
-        constexpr Color enemy = (turn == Color::White) ? Color::Black : Color::White;
+        // Castling is quiet
+        if constexpr (gen_quiet) {
+            constexpr Color enemy = (turn == Color::White) ? Color::Black : Color::White;
 
-        // Castling: check rights, path empty, king not in check, pass-through not attacked
-        // Destination check removed - handled by is_illegal() after make_move
-        if constexpr (turn == Color::White) {
-            if (from_sq == E1) {
-                // Kingside: rights + path empty + e1,f1 not attacked
-                if ((board.castling & WHITE_OO_RIGHT) &&
-                    !(board.all_occupied & WHITE_OO_PATH) &&
-                    !is_attacked<enemy>(E1, board) &&
-                    !is_attacked<enemy>(F1, board)) {
-                    Move32 m(E1, G1);
-                    m.set_castling();
-                    moves.add(m);
+            // Castling: check rights, path empty, king not in check, pass-through not attacked
+            // Destination check removed - handled by is_illegal() after make_move
+            if constexpr (turn == Color::White) {
+                if (from_sq == E1) {
+                    // Kingside: rights + path empty + e1,f1 not attacked
+                    if ((board.castling & WHITE_OO_RIGHT) &&
+                        !(board.all_occupied & WHITE_OO_PATH) &&
+                        !is_attacked<enemy>(E1, board) &&
+                        !is_attacked<enemy>(F1, board)) {
+                        Move32 m(E1, G1);
+                        m.set_castling();
+                        moves.add(m);
+                    }
+                    // Queenside: rights + path empty + e1,d1 not attacked
+                    if ((board.castling & WHITE_OOO_RIGHT) &&
+                        !(board.all_occupied & WHITE_OOO_PATH) &&
+                        !is_attacked<enemy>(E1, board) &&
+                        !is_attacked<enemy>(D1, board)) {
+                        Move32 m(E1, C1);
+                        m.set_castling();
+                        moves.add(m);
+                    }
                 }
-                // Queenside: rights + path empty + e1,d1 not attacked
-                if ((board.castling & WHITE_OOO_RIGHT) &&
-                    !(board.all_occupied & WHITE_OOO_PATH) &&
-                    !is_attacked<enemy>(E1, board) &&
-                    !is_attacked<enemy>(D1, board)) {
-                    Move32 m(E1, C1);
-                    m.set_castling();
-                    moves.add(m);
-                }
-            }
-        } else {
-            if (from_sq == E8) {
-                // Kingside: rights + path empty + e8,f8 not attacked
-                if ((board.castling & BLACK_OO_RIGHT) &&
-                    !(board.all_occupied & BLACK_OO_PATH) &&
-                    !is_attacked<enemy>(E8, board) &&
-                    !is_attacked<enemy>(F8, board)) {
-                    Move32 m(E8, G8);
-                    m.set_castling();
-                    moves.add(m);
-                }
-                // Queenside: rights + path empty + e8,d8 not attacked
-                if ((board.castling & BLACK_OOO_RIGHT) &&
-                    !(board.all_occupied & BLACK_OOO_PATH) &&
-                    !is_attacked<enemy>(E8, board) &&
-                    !is_attacked<enemy>(D8, board)) {
-                    Move32 m(E8, C8);
-                    m.set_castling();
-                    moves.add(m);
+            } else {
+                if (from_sq == E8) {
+                    // Kingside: rights + path empty + e8,f8 not attacked
+                    if ((board.castling & BLACK_OO_RIGHT) &&
+                        !(board.all_occupied & BLACK_OO_PATH) &&
+                        !is_attacked<enemy>(E8, board) &&
+                        !is_attacked<enemy>(F8, board)) {
+                        Move32 m(E8, G8);
+                        m.set_castling();
+                        moves.add(m);
+                    }
+                    // Queenside: rights + path empty + e8,d8 not attacked
+                    if ((board.castling & BLACK_OOO_RIGHT) &&
+                        !(board.all_occupied & BLACK_OOO_PATH) &&
+                        !is_attacked<enemy>(E8, board) &&
+                        !is_attacked<enemy>(D8, board)) {
+                        Move32 m(E8, C8);
+                        m.set_castling();
+                        moves.add(m);
+                    }
                 }
             }
         }
@@ -233,13 +285,27 @@ MoveList generate_moves(const Board& board) {
     return moves;
 }
 
+// Explicit template instantiations
+template MoveList generate_moves<Color::White, MoveType::All>(const Board&);
+template MoveList generate_moves<Color::White, MoveType::Noisy>(const Board&);
+template MoveList generate_moves<Color::White, MoveType::Quiet>(const Board&);
+template MoveList generate_moves<Color::Black, MoveType::All>(const Board&);
+template MoveList generate_moves<Color::Black, MoveType::Noisy>(const Board&);
+template MoveList generate_moves<Color::Black, MoveType::Quiet>(const Board&);
+
+template <MoveType type>
 MoveList generate_moves(const Board& board) {
     if (board.turn == Color::White) {
-        return generate_moves<Color::White>(board);
+        return generate_moves<Color::White, type>(board);
     } else {
-        return generate_moves<Color::Black>(board);
+        return generate_moves<Color::Black, type>(board);
     }
 }
+
+// Explicit instantiations for MoveType-only wrapper
+template MoveList generate_moves<MoveType::All>(const Board&);
+template MoveList generate_moves<MoveType::Noisy>(const Board&);
+template MoveList generate_moves<MoveType::Quiet>(const Board&);
 
 // Castling rook squares
 constexpr int A1 = 0, H1 = 7, A8 = 56, H8 = 63;

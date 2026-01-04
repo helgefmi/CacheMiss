@@ -4,6 +4,9 @@
 #include "board.hpp"
 #include <string>
 
+// Move generation type: All, Noisy (captures + promotions), or Quiet (non-captures, non-promotions)
+enum class MoveType { All, Noisy, Quiet };
+
 // A move is packed into a 32 bit integer as follows:
 // Bits 0-5:   From square (0-63)
 // Bits 6-11:  To square (0-63)
@@ -81,7 +84,10 @@ struct MoveList {
     const Move32& operator[](int i) const { return moves[i]; }
 };
 
-template <Color turn> MoveList generate_moves(const Board& board);
+template <Color turn, MoveType type = MoveType::All>
+MoveList generate_moves(const Board& board);
+
+template <MoveType type = MoveType::All>
 MoveList generate_moves(const Board& board);
 
 void make_move(Board& board, Move32& move);

@@ -105,20 +105,18 @@ static int quiescence(Board& board, int alpha, int beta, int ply) {
         }
     }
 
-    MoveList moves = generate_moves(board);
+    // When in check, generate all moves (must find escape)
+    // Otherwise, only generate noisy moves (captures + promotions)
+    MoveList moves = in_chk ? generate_moves(board)
+                            : generate_moves<MoveType::Noisy>(board);
 
     int legal_moves = 0;
 
     for (int i = 0; i < moves.size; ++i) {
-        // Pick best remaining move (captures/promotions will be picked first due to high scores)
+        // Pick best remaining move
         pick_move(moves, i, board);
 
         Move32& move = moves[i];
-
-        // Only search captures and promotions (but all moves if in check)
-        if (!in_chk && !move.is_capture() && !move.is_promotion()) {
-            continue;
-        }
 
         make_move(board, move);
 
@@ -152,6 +150,45 @@ static int quiescence(Board& board, int alpha, int beta, int ply) {
     return alpha;
 }
 
+// Forward declaration
+static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, int ply);
+
+// Helper to search a single move and update alpha/beta
+// Returns true if beta cutoff occurred
+static bool search_move(Board& board, TTable& tt, Move32& move, int depth, int& alpha, int beta, int ply,
+                        int& best_score, Move32& best_move, int& legal_moves) {
+    make_move(board, move);
+
+    if (is_illegal(board)) {
+        unmake_move(board, move);
+        return false;
+    }
+
+    legal_moves++;
+
+    int score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, ply + 1);
+
+    unmake_move(board, move);
+
+    if (stop_search) return false;
+
+    if (score > best_score) {
+        best_score = score;
+        best_move = move;
+    }
+
+    if (score >= beta) {
+        tt.store(board.hash, depth, beta, TT_LOWER, move);
+        return true;  // Beta cutoff
+    }
+
+    if (score > alpha) {
+        alpha = score;
+    }
+
+    return false;
+}
+
 static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, int ply) {
     if (check_time()) return 0;
 
@@ -169,61 +206,52 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
         return quiescence(board, alpha, beta, ply);
     }
 
-    MoveList moves = generate_moves(board);
-
-    // Try TT move first if available
-    if (tt_move.data != 0) {
-        for (int i = 0; i < moves.size; ++i) {
-            if (moves[i].same_move(tt_move)) {
-                // Swap to front
-                Move32 tmp = moves[0];
-                moves[0] = moves[i];
-                moves[i] = tmp;
-                break;
-            }
-        }
-    }
-
     int best_score = -INFINITY_SCORE;
     Move32 best_move(0);
     int legal_moves = 0;
+    bool tt_move_searched = false;
 
-    for (int i = 0; i < moves.size; ++i) {
-        // Pick best remaining move (skip i=0 if TT move is already there)
-        if (i > 0 || tt_move.data == 0) {
-            pick_move(moves, i, board);
+    // Try TT move first if available
+    if (tt_move.data != 0) {
+        if (search_move(board, tt, tt_move, depth, alpha, beta, ply, best_score, best_move, legal_moves)) {
+            return beta;  // Beta cutoff
         }
+        if (stop_search) return 0;
+        tt_move_searched = true;
+    }
 
-        Move32& move = moves[i];
+    // Stage 1: Noisy moves (captures + promotions)
+    MoveList noisy = generate_moves<MoveType::Noisy>(board);
+    for (int i = 0; i < noisy.size; ++i) {
+        pick_move(noisy, i, board);
+        Move32& move = noisy[i];
 
-        make_move(board, move);
-
-        if (is_illegal(board)) {
-            unmake_move(board, move);
+        // Skip if already searched as TT move
+        if (tt_move_searched && move.same_move(tt_move)) {
             continue;
         }
 
-        legal_moves++;
-
-        int score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, ply + 1);
-
-        unmake_move(board, move);
-
+        if (search_move(board, tt, move, depth, alpha, beta, ply, best_score, best_move, legal_moves)) {
+            return beta;  // Beta cutoff
+        }
         if (stop_search) return 0;
+    }
 
-        if (score > best_score) {
-            best_score = score;
-            best_move = move;
+    // Stage 2: Quiet moves
+    MoveList quiet = generate_moves<MoveType::Quiet>(board);
+    for (int i = 0; i < quiet.size; ++i) {
+        pick_move(quiet, i, board);
+        Move32& move = quiet[i];
+
+        // Skip if already searched as TT move
+        if (tt_move_searched && move.same_move(tt_move)) {
+            continue;
         }
 
-        if (score >= beta) {
-            tt.store(board.hash, depth, beta, TT_LOWER, move);
-            return beta;
+        if (search_move(board, tt, move, depth, alpha, beta, ply, best_score, best_move, legal_moves)) {
+            return beta;  // Beta cutoff
         }
-
-        if (score > alpha) {
-            alpha = score;
-        }
+        if (stop_search) return 0;
     }
 
     // No legal moves: checkmate or stalemate
@@ -241,58 +269,80 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
     return alpha;
 }
 
+// Helper to search a move at root level
+// Returns true if this is the new best move
+static bool search_root_move(Board& board, TTable& tt, Move32& move, int depth,
+                             int& alpha, Move32& best_move, int& best_score) {
+    make_move(board, move);
+
+    if (is_illegal(board)) {
+        unmake_move(board, move);
+        return false;
+    }
+
+    int score = -alpha_beta(board, tt, depth - 1, -INFINITY_SCORE, -alpha, 1);
+
+    unmake_move(board, move);
+
+    if (stop_search) return false;
+
+    if (score > best_score) {
+        best_score = score;
+        best_move = move;
+        if (score > alpha) {
+            alpha = score;
+        }
+        return true;
+    }
+
+    return false;
+}
+
 // Root search - returns best move and score
 static std::pair<Move32, int> search_root(Board& board, TTable& tt, int depth) {
-    MoveList moves = generate_moves(board);
-
     // Try TT move first if available
     int tt_score;
     Move32 tt_move(0);
     tt.probe(board.hash, depth, -INFINITY_SCORE, INFINITY_SCORE, tt_score, tt_move);
 
-    if (tt_move.data != 0) {
-        for (int i = 0; i < moves.size; ++i) {
-            if (moves[i].same_move(tt_move)) {
-                std::swap(moves[0], moves[i]);
-                break;
-            }
-        }
-    }
-
     int alpha = -INFINITY_SCORE;
-    int beta = INFINITY_SCORE;
     Move32 best_move(0);
     int best_score = -INFINITY_SCORE;
+    bool tt_move_searched = false;
 
-    for (int i = 0; i < moves.size; ++i) {
-        // Pick best remaining move (skip i=0 if TT move is already there)
-        if (i > 0 || tt_move.data == 0) {
-            pick_move(moves, i, board);
-        }
+    // Try TT move first
+    if (tt_move.data != 0) {
+        search_root_move(board, tt, tt_move, depth, alpha, best_move, best_score);
+        if (stop_search) return {best_move, best_score};
+        tt_move_searched = true;
+    }
 
-        Move32& move = moves[i];
+    // Stage 1: Noisy moves (captures + promotions)
+    MoveList noisy = generate_moves<MoveType::Noisy>(board);
+    for (int i = 0; i < noisy.size; ++i) {
+        pick_move(noisy, i, board);
+        Move32& move = noisy[i];
 
-        make_move(board, move);
-
-        if (is_illegal(board)) {
-            unmake_move(board, move);
+        if (tt_move_searched && move.same_move(tt_move)) {
             continue;
         }
 
-        int score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, 1);
+        search_root_move(board, tt, move, depth, alpha, best_move, best_score);
+        if (stop_search) return {best_move, best_score};
+    }
 
-        unmake_move(board, move);
+    // Stage 2: Quiet moves
+    MoveList quiet = generate_moves<MoveType::Quiet>(board);
+    for (int i = 0; i < quiet.size; ++i) {
+        pick_move(quiet, i, board);
+        Move32& move = quiet[i];
 
-        if (stop_search) break;
-
-        if (score > best_score) {
-            best_score = score;
-            best_move = move;
+        if (tt_move_searched && move.same_move(tt_move)) {
+            continue;
         }
 
-        if (score > alpha) {
-            alpha = score;
-        }
+        search_root_move(board, tt, move, depth, alpha, best_move, best_score);
+        if (stop_search) return {best_move, best_score};
     }
 
     // Store root position in TT
