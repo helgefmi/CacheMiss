@@ -8,6 +8,57 @@ constexpr int INFINITY_SCORE = 30000;
 constexpr int MATE_SCORE = 29000;
 constexpr int MAX_DEPTH = 64;
 
+// Piece values for MVV-LVA move ordering
+constexpr int MVV_LVA_VALUES[] = {
+    100,   // Pawn
+    320,   // Knight
+    330,   // Bishop
+    500,   // Rook
+    900,   // Queen
+    20000, // King (shouldn't be captured, but just in case)
+    0,     // (unused)
+    0      // None
+};
+
+// Score a move for ordering purposes
+// Higher score = searched first
+static int score_move(const Move32& move, const Board& board) {
+    int score = 0;
+
+    // Captures: MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+    if (move.is_capture()) {
+        int victim_value = MVV_LVA_VALUES[(int)move.captured()];
+        int attacker_value = MVV_LVA_VALUES[(int)board.pieces_on_square[move.from()]];
+        // Scale victim by 10 so even bad captures are tried before quiet moves
+        score += 10000 + victim_value * 10 - attacker_value;
+    }
+
+    // Promotions (queen promotion is best)
+    if (move.is_promotion()) {
+        score += 9000 + MVV_LVA_VALUES[(int)move.promotion()];
+    }
+
+    return score;
+}
+
+// Pick the best move from index 'start' onwards and swap it to 'start'
+static void pick_move(MoveList& moves, int start, const Board& board) {
+    int best_idx = start;
+    int best_score = score_move(moves[start], board);
+
+    for (int i = start + 1; i < moves.size; ++i) {
+        int score = score_move(moves[i], board);
+        if (score > best_score) {
+            best_score = score;
+            best_idx = i;
+        }
+    }
+
+    if (best_idx != start) {
+        std::swap(moves[start], moves[best_idx]);
+    }
+}
+
 // Search state
 static std::chrono::steady_clock::time_point start_time;
 static int time_limit;
@@ -59,6 +110,9 @@ static int quiescence(Board& board, int alpha, int beta, int ply) {
     int legal_moves = 0;
 
     for (int i = 0; i < moves.size; ++i) {
+        // Pick best remaining move (captures/promotions will be picked first due to high scores)
+        pick_move(moves, i, board);
+
         Move32& move = moves[i];
 
         // Only search captures and promotions (but all moves if in check)
@@ -135,6 +189,11 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
     int legal_moves = 0;
 
     for (int i = 0; i < moves.size; ++i) {
+        // Pick best remaining move (skip i=0 if TT move is already there)
+        if (i > 0 || tt_move.data == 0) {
+            pick_move(moves, i, board);
+        }
+
         Move32& move = moves[i];
 
         make_move(board, move);
@@ -206,6 +265,11 @@ static std::pair<Move32, int> search_root(Board& board, TTable& tt, int depth) {
     int best_score = -INFINITY_SCORE;
 
     for (int i = 0; i < moves.size; ++i) {
+        // Pick best remaining move (skip i=0 if TT move is already there)
+        if (i > 0 || tt_move.data == 0) {
+            pick_move(moves, i, board);
+        }
+
         Move32& move = moves[i];
 
         make_move(board, move);
