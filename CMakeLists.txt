@@ -79,3 +79,7 @@ target_link_libraries(pgn2epd cachemiss_core)
 # Magic bitboard generator (standalone tool)
 add_executable(gen_magics tools/gen_magics.cpp)
 target_include_directories(gen_magics PRIVATE src)
+
+# PST tuner tool
+add_executable(tune_pst tools/tune_pst.cpp)
+target_link_libraries(tune_pst cachemiss_core)
