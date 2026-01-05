@@ -1330,13 +1330,16 @@ int main(int argc, char* argv[]) {
         });
     }
 
-    // Dedicated UI refresh thread - posts at fixed 10Hz rate to avoid event queue flooding
+    // Dedicated UI refresh thread - posts at fixed 5Hz rate to avoid event queue flooding
     // This replaces per-game screen.Post() calls from workers which could overwhelm the UI
     std::thread refresh_thread([&] {
         log_msg("Refresh thread started");
         while (!all_done.load() && !fatal_error.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            screen.Post(Event::Custom);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            // Double-check before posting to avoid race with screen exit
+            if (!all_done.load() && !fatal_error.load()) {
+                screen.Post(Event::Custom);
+            }
         }
         log_msg("Refresh thread exiting");
     });
