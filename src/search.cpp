@@ -6,7 +6,6 @@
 // Constants
 constexpr int INFINITY_SCORE = 30000;
 constexpr int MATE_SCORE = 29000;
-constexpr int MAX_DEPTH = 64;
 
 // Piece values for MVV-LVA move ordering
 constexpr int MVV_LVA_VALUES[] = {
@@ -26,13 +25,13 @@ constexpr int KILLER_SCORE_2 = 8000;   // Second killer
 constexpr int HISTORY_MAX = 6000;      // Cap history scores
 
 // Killer moves: 2 per ply
-static Move32 killers[MAX_DEPTH][2];
+static Move32 killers[MAX_PLY][2];
 
 // History heuristic: indexed by [color][from][to]
 static int history[2][64][64];
 
 static void clear_killers() {
-    for (int ply = 0; ply < MAX_DEPTH; ++ply) {
+    for (int ply = 0; ply < MAX_PLY; ++ply) {
         killers[ply][0] = Move32(0);
         killers[ply][1] = Move32(0);
     }
@@ -70,6 +69,26 @@ static void update_history(Color color, Move32 move, int depth) {
 
     // Cap to prevent overflow
     if (h > HISTORY_MAX) h = HISTORY_MAX;
+}
+
+// Triangular PV table: pv_table[ply] stores the PV from that ply onwards
+static Move32 pv_table[MAX_PLY][MAX_PLY];
+static int pv_length[MAX_PLY];
+
+// Previous iteration's best move for root ordering
+static Move32 prev_best_move;
+
+static void init_pv(int ply) {
+    pv_length[ply] = ply;
+}
+
+static void update_pv(int ply, Move32 move) {
+    pv_table[ply][ply] = move;
+    // Copy child's PV
+    for (int i = ply + 1; i < pv_length[ply + 1]; ++i) {
+        pv_table[ply][i] = pv_table[ply + 1][i];
+    }
+    pv_length[ply] = pv_length[ply + 1];
 }
 
 // Score a move for ordering purposes
@@ -218,53 +237,51 @@ static int quiescence(Board& board, int alpha, int beta, int ply) {
 }
 
 // Forward declaration
-static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, int ply);
+static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, int ply, bool is_pv_node);
 
-// Helper to search a single move and update alpha/beta
-// Returns true if beta cutoff occurred
-static bool search_move(Board& board, TTable& tt, Move32& move, int depth, int& alpha, int beta, int ply,
-                        int& best_score, Move32& best_move, int& legal_moves) {
+// Helper to search a single move with PVS
+// Returns the score, or INFINITY_SCORE if the move is illegal
+static int search_move_pvs(Board& board, TTable& tt, Move32& move, int depth, int alpha, int beta,
+                           int ply, bool is_pv_node, bool found_pv) {
     make_move(board, move);
 
     if (is_illegal(board)) {
         unmake_move(board, move);
-        return false;
+        return INFINITY_SCORE;  // Sentinel: illegal move
     }
 
-    legal_moves++;
+    int score;
 
-    int score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, ply + 1);
+    if (found_pv) {
+        // Null-window search (scout)
+        score = -alpha_beta(board, tt, depth - 1, -alpha - 1, -alpha, ply + 1, false);
+
+        // Re-search with full window if it might be better
+        if (score > alpha && score < beta && !stop_search) {
+            score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, ply + 1, true);
+        }
+    } else {
+        // Full window search for first move
+        score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, ply + 1, is_pv_node);
+    }
 
     unmake_move(board, move);
-
-    if (stop_search) return false;
-
-    if (score > best_score) {
-        best_score = score;
-        best_move = move;
-    }
-
-    if (score >= beta) {
-        tt.store(board.hash, depth, beta, TT_LOWER, move);
-        return true;  // Beta cutoff
-    }
-
-    if (score > alpha) {
-        alpha = score;
-    }
-
-    return false;
+    return score;
 }
 
-static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, int ply) {
+static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, int ply, bool is_pv_node) {
     if (check_time()) return 0;
 
     nodes_searched++;
 
-    // TT probe
+    // Initialize PV for this ply
+    init_pv(ply);
+
+    // TT probe - only use for cutoffs in non-PV nodes
     int tt_score;
     Move32 tt_move(0);
-    if (tt.probe(board.hash, depth, alpha, beta, tt_score, tt_move)) {
+    bool tt_hit = tt.probe(board.hash, depth, alpha, beta, tt_score, tt_move);
+    if (tt_hit && !is_pv_node) {
         return tt_score;
     }
 
@@ -277,16 +294,34 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
     Move32 best_move(0);
     int legal_moves = 0;
     bool tt_move_searched = false;
+    bool found_pv = false;
 
     // Try TT move first if available
     if (tt_move.data != 0) {
-        if (search_move(board, tt, tt_move, depth, alpha, beta, ply, best_score, best_move, legal_moves)) {
-            // Update killer and history on beta cutoff
-            update_killer(ply, tt_move);
-            update_history(board.turn, tt_move, depth);
-            return beta;
+        int score = search_move_pvs(board, tt, tt_move, depth, alpha, beta, ply, is_pv_node, found_pv);
+        if (score != INFINITY_SCORE) {  // Legal move
+            legal_moves++;
+
+            if (stop_search) return 0;
+
+            if (score > best_score) {
+                best_score = score;
+                best_move = tt_move;
+            }
+
+            if (score >= beta) {
+                update_killer(ply, tt_move);
+                update_history(board.turn, tt_move, depth);
+                tt.store(board.hash, depth, beta, TT_LOWER, tt_move);
+                return beta;
+            }
+
+            if (score > alpha) {
+                alpha = score;
+                found_pv = true;
+                update_pv(ply, tt_move);
+            }
         }
-        if (stop_search) return 0;
         tt_move_searched = true;
     }
 
@@ -301,13 +336,30 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
             continue;
         }
 
-        if (search_move(board, tt, move, depth, alpha, beta, ply, best_score, best_move, legal_moves)) {
-            // Update killer and history on beta cutoff
+        int score = search_move_pvs(board, tt, move, depth, alpha, beta, ply, is_pv_node, found_pv);
+        if (score == INFINITY_SCORE) continue;  // Illegal move
+
+        legal_moves++;
+
+        if (stop_search) return 0;
+
+        if (score > best_score) {
+            best_score = score;
+            best_move = move;
+        }
+
+        if (score >= beta) {
             update_killer(ply, move);
             update_history(board.turn, move, depth);
+            tt.store(board.hash, depth, beta, TT_LOWER, move);
             return beta;
         }
-        if (stop_search) return 0;
+
+        if (score > alpha) {
+            alpha = score;
+            found_pv = true;
+            update_pv(ply, move);
+        }
     }
 
     // Stage 2: Quiet moves
@@ -321,13 +373,30 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
             continue;
         }
 
-        if (search_move(board, tt, move, depth, alpha, beta, ply, best_score, best_move, legal_moves)) {
-            // Update killer and history on beta cutoff
+        int score = search_move_pvs(board, tt, move, depth, alpha, beta, ply, is_pv_node, found_pv);
+        if (score == INFINITY_SCORE) continue;  // Illegal move
+
+        legal_moves++;
+
+        if (stop_search) return 0;
+
+        if (score > best_score) {
+            best_score = score;
+            best_move = move;
+        }
+
+        if (score >= beta) {
             update_killer(ply, move);
             update_history(board.turn, move, depth);
+            tt.store(board.hash, depth, beta, TT_LOWER, move);
             return beta;
         }
-        if (stop_search) return 0;
+
+        if (score > alpha) {
+            alpha = score;
+            found_pv = true;
+            update_pv(ply, move);
+        }
     }
 
     // No legal moves: checkmate or stalemate
@@ -339,86 +408,157 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
     }
 
     // Store in TT
-    TTFlag flag = (best_score > alpha - 1) ? TT_EXACT : TT_UPPER;
-    tt.store(board.hash, depth, alpha, flag, best_move);
+    TTFlag flag = found_pv ? TT_EXACT : TT_UPPER;
+    tt.store(board.hash, depth, best_score, flag, best_move);
 
-    return alpha;
+    return best_score;
 }
 
-// Helper to search a move at root level
-// Returns true if this is the new best move
-static bool search_root_move(Board& board, TTable& tt, Move32& move, int depth,
-                             int& alpha, Move32& best_move, int& best_score) {
+// Helper to search a move at root level with PVS
+// Returns the score, or INFINITY_SCORE if illegal
+static int search_root_move_pvs(Board& board, TTable& tt, Move32& move, int depth,
+                                int alpha, int beta, bool found_pv) {
     make_move(board, move);
 
     if (is_illegal(board)) {
         unmake_move(board, move);
-        return false;
+        return INFINITY_SCORE;  // Sentinel: illegal move
     }
 
-    int score = -alpha_beta(board, tt, depth - 1, -INFINITY_SCORE, -alpha, 1);
+    int score;
+
+    if (found_pv) {
+        // Null-window search
+        score = -alpha_beta(board, tt, depth - 1, -alpha - 1, -alpha, 1, false);
+
+        // Re-search with full window if needed
+        if (score > alpha && score < beta && !stop_search) {
+            score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, 1, true);
+        }
+    } else {
+        // Full window search for first move
+        score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, 1, true);
+    }
 
     unmake_move(board, move);
-
-    if (stop_search) return false;
-
-    if (score > best_score) {
-        best_score = score;
-        best_move = move;
-        if (score > alpha) {
-            alpha = score;
-        }
-        return true;
-    }
-
-    return false;
+    return score;
 }
 
 // Root search - returns best move and score
 static std::pair<Move32, int> search_root(Board& board, TTable& tt, int depth) {
+    // Initialize PV for root
+    init_pv(0);
+
     // Try TT move first if available
     int tt_score;
     Move32 tt_move(0);
     tt.probe(board.hash, depth, -INFINITY_SCORE, INFINITY_SCORE, tt_score, tt_move);
 
     int alpha = -INFINITY_SCORE;
+    int beta = INFINITY_SCORE;
     Move32 best_move(0);
     int best_score = -INFINITY_SCORE;
+    bool prev_best_searched = false;
     bool tt_move_searched = false;
+    bool found_pv = false;
 
-    // Try TT move first
-    if (tt_move.data != 0) {
-        search_root_move(board, tt, tt_move, depth, alpha, best_move, best_score);
-        if (stop_search) return {best_move, best_score};
+    // Try previous iteration's best move first (if different from TT move)
+    if (prev_best_move.data != 0) {
+        int score = search_root_move_pvs(board, tt, prev_best_move, depth, alpha, beta, found_pv);
+        if (score != INFINITY_SCORE) {
+            if (stop_search) return {prev_best_move, score};
+
+            if (score > best_score) {
+                best_score = score;
+                best_move = prev_best_move;
+            }
+
+            if (score > alpha) {
+                alpha = score;
+                found_pv = true;
+                update_pv(0, prev_best_move);
+            }
+        }
+        prev_best_searched = true;
+
+        // Mark TT move as searched if it's the same
+        if (tt_move.data != 0 && tt_move.same_move(prev_best_move)) {
+            tt_move_searched = true;
+        }
+    }
+
+    // Try TT move if not already searched
+    if (tt_move.data != 0 && !tt_move_searched) {
+        int score = search_root_move_pvs(board, tt, tt_move, depth, alpha, beta, found_pv);
+        if (score != INFINITY_SCORE) {
+            if (stop_search) return {best_move.data != 0 ? best_move : tt_move, best_score != -INFINITY_SCORE ? best_score : score};
+
+            if (score > best_score) {
+                best_score = score;
+                best_move = tt_move;
+            }
+
+            if (score > alpha) {
+                alpha = score;
+                found_pv = true;
+                update_pv(0, tt_move);
+            }
+        }
         tt_move_searched = true;
     }
 
     // Stage 1: Noisy moves (captures + promotions)
     MoveList noisy = generate_moves<MoveType::Noisy>(board);
     for (int i = 0; i < noisy.size; ++i) {
-        pick_move(noisy, i, board, 0);  // ply=0 at root
+        pick_move(noisy, i, board, 0);
         Move32& move = noisy[i];
 
-        if (tt_move_searched && move.same_move(tt_move)) {
-            continue;
+        // Skip if already searched
+        if (prev_best_searched && move.same_move(prev_best_move)) continue;
+        if (tt_move_searched && move.same_move(tt_move)) continue;
+
+        int score = search_root_move_pvs(board, tt, move, depth, alpha, beta, found_pv);
+        if (score == INFINITY_SCORE) continue;
+
+        if (stop_search) return {best_move, best_score};
+
+        if (score > best_score) {
+            best_score = score;
+            best_move = move;
         }
 
-        search_root_move(board, tt, move, depth, alpha, best_move, best_score);
-        if (stop_search) return {best_move, best_score};
+        if (score > alpha) {
+            alpha = score;
+            found_pv = true;
+            update_pv(0, move);
+        }
     }
 
     // Stage 2: Quiet moves
     MoveList quiet = generate_moves<MoveType::Quiet>(board);
     for (int i = 0; i < quiet.size; ++i) {
-        pick_move(quiet, i, board, 0);  // ply=0 at root
+        pick_move(quiet, i, board, 0);
         Move32& move = quiet[i];
 
-        if (tt_move_searched && move.same_move(tt_move)) {
-            continue;
+        // Skip if already searched
+        if (prev_best_searched && move.same_move(prev_best_move)) continue;
+        if (tt_move_searched && move.same_move(tt_move)) continue;
+
+        int score = search_root_move_pvs(board, tt, move, depth, alpha, beta, found_pv);
+        if (score == INFINITY_SCORE) continue;
+
+        if (stop_search) return {best_move, best_score};
+
+        if (score > best_score) {
+            best_score = score;
+            best_move = move;
         }
 
-        search_root_move(board, tt, move, depth, alpha, best_move, best_score);
-        if (stop_search) return {best_move, best_score};
+        if (score > alpha) {
+            alpha = score;
+            found_pv = true;
+            update_pv(0, move);
+        }
     }
 
     // Store root position in TT
@@ -438,13 +578,15 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
     // Clear move ordering tables for new search
     clear_killers();
     clear_history();
+    prev_best_move = Move32(0);
 
     SearchResult result;
     result.best_move = Move32(0);
     result.score = 0;
     result.depth = 0;
+    result.pv_length = 0;
 
-    for (int depth = 1; depth <= MAX_DEPTH; ++depth) {
+    for (int depth = 1; depth <= MAX_PLY; ++depth) {
         auto [move, score] = search_root(board, tt, depth);
 
         if (stop_search) {
@@ -461,7 +603,16 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
         result.score = score;
         result.depth = depth;
 
-        // Print UCI-style info
+        // Copy PV to result
+        result.pv_length = pv_length[0];
+        for (int i = 0; i < pv_length[0]; ++i) {
+            result.pv[i] = pv_table[0][i];
+        }
+
+        // Save best move for next iteration's move ordering
+        prev_best_move = move;
+
+        // Print UCI-style info with full PV
         auto now = std::chrono::steady_clock::now();
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
 
@@ -469,11 +620,16 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
                   << " score cp " << score
                   << " nodes " << nodes_searched
                   << " time " << elapsed_ms
-                  << " pv " << move.to_uci()
-                  << std::endl;
+                  << " pv";
+
+        // Output full PV line
+        for (int i = 0; i < result.pv_length; ++i) {
+            std::cout << " " << result.pv[i].to_uci();
+        }
+        std::cout << std::endl;
 
         // Early exit if we found a mate
-        if (score >= MATE_SCORE - MAX_DEPTH || score <= -MATE_SCORE + MAX_DEPTH) {
+        if (score >= MATE_SCORE - MAX_PLY || score <= -MATE_SCORE + MAX_PLY) {
             break;
         }
     }
