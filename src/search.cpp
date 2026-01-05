@@ -20,9 +20,63 @@ constexpr int MVV_LVA_VALUES[] = {
     0      // None
 };
 
+// Move ordering bonuses
+constexpr int KILLER_SCORE_1 = 9000;   // First killer (just below promotions)
+constexpr int KILLER_SCORE_2 = 8000;   // Second killer
+constexpr int HISTORY_MAX = 6000;      // Cap history scores
+
+// Killer moves: 2 per ply
+static Move32 killers[MAX_DEPTH][2];
+
+// History heuristic: indexed by [color][from][to]
+static int history[2][64][64];
+
+static void clear_killers() {
+    for (int ply = 0; ply < MAX_DEPTH; ++ply) {
+        killers[ply][0] = Move32(0);
+        killers[ply][1] = Move32(0);
+    }
+}
+
+static void clear_history() {
+    for (int c = 0; c < 2; ++c) {
+        for (int from = 0; from < 64; ++from) {
+            for (int to = 0; to < 64; ++to) {
+                history[c][from][to] = 0;
+            }
+        }
+    }
+}
+
+static void update_killer(int ply, Move32 move) {
+    // Don't store captures as killers
+    if (move.is_capture()) return;
+
+    // Don't store if already first killer
+    if (killers[ply][0].same_move(move)) return;
+
+    // Shift and insert
+    killers[ply][1] = killers[ply][0];
+    killers[ply][0] = move;
+}
+
+static void update_history(Color color, Move32 move, int depth) {
+    // Only update for quiet moves
+    if (move.is_capture()) return;
+
+    int bonus = depth * depth;
+    int& h = history[(int)color][move.from()][move.to()];
+    h += bonus;
+
+    // Cap to prevent overflow
+    if (h > HISTORY_MAX) h = HISTORY_MAX;
+}
+
 // Score a move for ordering purposes
 // Higher score = searched first
-static int score_move(const Move32& move, const Board& board) {
+// For noisy moves: MVV-LVA + promotion bonus
+// For quiet moves: killer bonus + history score
+static int score_move(const Move32& move, const Board& board, int ply) {
     int score = 0;
 
     // Captures: MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
@@ -38,16 +92,29 @@ static int score_move(const Move32& move, const Board& board) {
         score += 9000 + MVV_LVA_VALUES[(int)move.promotion()];
     }
 
+    // Quiet move ordering: killers then history
+    if (!move.is_capture() && !move.is_promotion()) {
+        if (killers[ply][0].same_move(move)) {
+            score += KILLER_SCORE_1;
+        } else if (killers[ply][1].same_move(move)) {
+            score += KILLER_SCORE_2;
+        } else {
+            // History score
+            Color color = board.turn;
+            score += history[(int)color][move.from()][move.to()];
+        }
+    }
+
     return score;
 }
 
 // Pick the best move from index 'start' onwards and swap it to 'start'
-static void pick_move(MoveList& moves, int start, const Board& board) {
+static void pick_move(MoveList& moves, int start, const Board& board, int ply) {
     int best_idx = start;
-    int best_score = score_move(moves[start], board);
+    int best_score = score_move(moves[start], board, ply);
 
     for (int i = start + 1; i < moves.size; ++i) {
-        int score = score_move(moves[i], board);
+        int score = score_move(moves[i], board, ply);
         if (score > best_score) {
             best_score = score;
             best_idx = i;
@@ -114,7 +181,7 @@ static int quiescence(Board& board, int alpha, int beta, int ply) {
 
     for (int i = 0; i < moves.size; ++i) {
         // Pick best remaining move
-        pick_move(moves, i, board);
+        pick_move(moves, i, board, ply);
 
         Move32& move = moves[i];
 
@@ -214,7 +281,10 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
     // Try TT move first if available
     if (tt_move.data != 0) {
         if (search_move(board, tt, tt_move, depth, alpha, beta, ply, best_score, best_move, legal_moves)) {
-            return beta;  // Beta cutoff
+            // Update killer and history on beta cutoff
+            update_killer(ply, tt_move);
+            update_history(board.turn, tt_move, depth);
+            return beta;
         }
         if (stop_search) return 0;
         tt_move_searched = true;
@@ -223,7 +293,7 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
     // Stage 1: Noisy moves (captures + promotions)
     MoveList noisy = generate_moves<MoveType::Noisy>(board);
     for (int i = 0; i < noisy.size; ++i) {
-        pick_move(noisy, i, board);
+        pick_move(noisy, i, board, ply);
         Move32& move = noisy[i];
 
         // Skip if already searched as TT move
@@ -232,7 +302,10 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
         }
 
         if (search_move(board, tt, move, depth, alpha, beta, ply, best_score, best_move, legal_moves)) {
-            return beta;  // Beta cutoff
+            // Update killer and history on beta cutoff
+            update_killer(ply, move);
+            update_history(board.turn, move, depth);
+            return beta;
         }
         if (stop_search) return 0;
     }
@@ -240,7 +313,7 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
     // Stage 2: Quiet moves
     MoveList quiet = generate_moves<MoveType::Quiet>(board);
     for (int i = 0; i < quiet.size; ++i) {
-        pick_move(quiet, i, board);
+        pick_move(quiet, i, board, ply);
         Move32& move = quiet[i];
 
         // Skip if already searched as TT move
@@ -249,7 +322,10 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
         }
 
         if (search_move(board, tt, move, depth, alpha, beta, ply, best_score, best_move, legal_moves)) {
-            return beta;  // Beta cutoff
+            // Update killer and history on beta cutoff
+            update_killer(ply, move);
+            update_history(board.turn, move, depth);
+            return beta;
         }
         if (stop_search) return 0;
     }
@@ -320,7 +396,7 @@ static std::pair<Move32, int> search_root(Board& board, TTable& tt, int depth) {
     // Stage 1: Noisy moves (captures + promotions)
     MoveList noisy = generate_moves<MoveType::Noisy>(board);
     for (int i = 0; i < noisy.size; ++i) {
-        pick_move(noisy, i, board);
+        pick_move(noisy, i, board, 0);  // ply=0 at root
         Move32& move = noisy[i];
 
         if (tt_move_searched && move.same_move(tt_move)) {
@@ -334,7 +410,7 @@ static std::pair<Move32, int> search_root(Board& board, TTable& tt, int depth) {
     // Stage 2: Quiet moves
     MoveList quiet = generate_moves<MoveType::Quiet>(board);
     for (int i = 0; i < quiet.size; ++i) {
-        pick_move(quiet, i, board);
+        pick_move(quiet, i, board, 0);  // ply=0 at root
         Move32& move = quiet[i];
 
         if (tt_move_searched && move.same_move(tt_move)) {
@@ -358,6 +434,10 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
     time_limit = time_limit_ms;
     stop_search = false;
     nodes_searched = 0;
+
+    // Clear move ordering tables for new search
+    clear_killers();
+    clear_history();
 
     SearchResult result;
     result.best_move = Move32(0);
