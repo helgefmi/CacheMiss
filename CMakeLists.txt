@@ -83,3 +83,7 @@ target_include_directories(gen_magics PRIVATE src)
 # PST tuner tool
 add_executable(tune_pst tools/tune_pst.cpp)
 target_link_libraries(tune_pst cachemiss_core)
+
+# WAC comparison tool
+add_executable(wac_compare tools/wac_compare.cpp)
+target_link_libraries(wac_compare pthread)
