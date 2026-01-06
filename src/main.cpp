@@ -5,21 +5,22 @@
 #include "search.hpp"
 #include "uci.hpp"
 #include "zobrist.hpp"
-#include <cstring>
+#include <getopt.h>
 #include <iostream>
 #include <string>
 
 void print_usage(const char* prog) {
     std::cerr << "Usage: " << prog << " [options]\n"
               << "Options:\n"
-              << "  -fen <fen>      Set position (default: starting position)\n"
-              << "  -perft <depth>  Run perft to given depth\n"
-              << "  -divide <depth> Run divide (perft per move) to given depth\n"
-              << "  -search [time]  Search for best move (time in ms, default: 10000)\n"
-              << "  -bench-perftsuite <file> [max_depth]  Run perft test suite\n"
-              << "  -bench-wac <file> [time_ms]  Run WAC test suite (default: 1000ms per position)\n"
-              << "  -wac-id <id>     Filter WAC suite to single position (e.g., \"WAC.007\")\n"
-              << "  -mem <mb>       Hash table size in MB (default: 512)\n";
+              << "  --fen <fen>              Set position (default: starting position)\n"
+              << "  --perft <depth>          Run perft to given depth\n"
+              << "  --divide <depth>         Run divide (perft per move) to given depth\n"
+              << "  --search[=time]          Search for best move (time in ms, default: 10000)\n"
+              << "  --bench-perftsuite <file>[=max_depth]  Run perft test suite\n"
+              << "  --bench-wac <file>[=time_ms]  Run WAC test suite (default: 1000ms)\n"
+              << "  --wac-id <id>            Filter WAC suite to single position\n"
+              << "  --mem <mb>               Hash table size in MB (default: 512)\n"
+              << "  -h, --help               Show this help\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -36,37 +37,68 @@ int main(int argc, char* argv[]) {
     std::string wac_id;
     size_t mem_mb = 512;
 
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-fen") == 0 && i + 1 < argc) {
-            fen = argv[++i];
-        } else if (strcmp(argv[i], "-perft") == 0 && i + 1 < argc) {
-            perft_depth = std::stoi(argv[++i]);
-        } else if (strcmp(argv[i], "-divide") == 0 && i + 1 < argc) {
-            divide_depth = std::stoi(argv[++i]);
-        } else if (strcmp(argv[i], "-mem") == 0 && i + 1 < argc) {
-            mem_mb = std::stoul(argv[++i]);
-        } else if (strcmp(argv[i], "-search") == 0) {
-            search_time = 10000;  // default 10 seconds
-            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
-                search_time = std::stoi(argv[++i]);
+    enum Opt {
+        OPT_FEN = 'f',
+        OPT_PERFT = 'p',
+        OPT_DIVIDE = 'd',
+        OPT_SEARCH = 's',
+        OPT_BENCH_PERFTSUITE = 'P',
+        OPT_BENCH_WAC = 'w',
+        OPT_WAC_ID = 'i',
+        OPT_MEM = 'm',
+        OPT_HELP = 'h',
+    };
+
+    static struct option long_options[] = {
+        {"fen",             required_argument, nullptr, OPT_FEN},
+        {"perft",           required_argument, nullptr, OPT_PERFT},
+        {"divide",          required_argument, nullptr, OPT_DIVIDE},
+        {"search",          optional_argument, nullptr, OPT_SEARCH},
+        {"bench-perftsuite", required_argument, nullptr, OPT_BENCH_PERFTSUITE},
+        {"bench-wac",       required_argument, nullptr, OPT_BENCH_WAC},
+        {"wac-id",          required_argument, nullptr, OPT_WAC_ID},
+        {"mem",             required_argument, nullptr, OPT_MEM},
+        {"help",            no_argument,       nullptr, OPT_HELP},
+        {nullptr, 0, nullptr, 0}
+    };
+
+    int opt;
+    while ((opt = getopt_long(argc, argv, "f:p:d:s::P:w:i:m:h", long_options, nullptr)) != -1) {
+        switch (opt) {
+        case OPT_FEN:
+            fen = optarg;
+            break;
+        case OPT_PERFT:
+            perft_depth = std::stoi(optarg);
+            break;
+        case OPT_DIVIDE:
+            divide_depth = std::stoi(optarg);
+            break;
+        case OPT_SEARCH:
+            search_time = optarg ? std::stoi(optarg) : 10000;
+            break;
+        case OPT_BENCH_PERFTSUITE:
+            perftsuite_file = optarg;
+            if (optind < argc && argv[optind][0] != '-') {
+                perftsuite_max_depth = std::stoi(argv[optind++]);
             }
-        } else if (strcmp(argv[i], "-bench-perftsuite") == 0 && i + 1 < argc) {
-            perftsuite_file = argv[++i];
-            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
-                perftsuite_max_depth = std::stoi(argv[++i]);
+            break;
+        case OPT_BENCH_WAC:
+            wac_file = optarg;
+            if (optind < argc && argv[optind][0] != '-') {
+                wac_time_ms = std::stoi(argv[optind++]);
             }
-        } else if (strcmp(argv[i], "-bench-wac") == 0 && i + 1 < argc) {
-            wac_file = argv[++i];
-            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
-                wac_time_ms = std::stoi(argv[++i]);
-            }
-        } else if (strcmp(argv[i], "-wac-id") == 0 && i + 1 < argc) {
-            wac_id = argv[++i];
-        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            break;
+        case OPT_WAC_ID:
+            wac_id = optarg;
+            break;
+        case OPT_MEM:
+            mem_mb = std::stoul(optarg);
+            break;
+        case OPT_HELP:
             print_usage(argv[0]);
             return 0;
-        } else {
-            std::cerr << "Unknown option: " << argv[i] << '\n';
+        default:
             print_usage(argv[0]);
             return 1;
         }
