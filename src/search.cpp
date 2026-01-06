@@ -20,167 +20,217 @@ constexpr int MVV_LVA_VALUES[] = {
 };
 
 // Move ordering bonuses
-constexpr int KILLER_SCORE_1 = 9000;   // First killer (just below promotions)
-constexpr int KILLER_SCORE_2 = 8000;   // Second killer
-constexpr int HISTORY_MAX = 6000;      // Cap history scores
+constexpr int KILLER_SCORE_1 = 9000;
+constexpr int KILLER_SCORE_2 = 8000;
+constexpr int HISTORY_MAX = 6000;
 
-// Killer moves: 2 per ply
-static Move32 killers[MAX_PLY][2];
+// ============================================================================
+// SearchContext - bundles all search state
+// ============================================================================
 
-// History heuristic: indexed by [color][from][to]
-static int history[2][64][64];
+struct SearchContext {
+    Board& board;
+    TTable& tt;
 
-static void clear_killers() {
-    for (int ply = 0; ply < MAX_PLY; ++ply) {
-        killers[ply][0] = Move32(0);
-        killers[ply][1] = Move32(0);
-    }
-}
+    // Time control
+    std::chrono::steady_clock::time_point start_time;
+    int time_limit_ms;
+    bool stop_search = false;
+    u64 nodes_searched = 0;
 
-static void clear_history() {
-    for (int c = 0; c < 2; ++c) {
-        for (int from = 0; from < 64; ++from) {
-            for (int to = 0; to < 64; ++to) {
-                history[c][from][to] = 0;
+    // Move ordering tables
+    Move32 killers[MAX_PLY][2] = {};
+    int history[2][64][64] = {};
+
+    // PV tracking
+    Move32 pv_table[MAX_PLY][MAX_PLY] = {};
+    int pv_length[MAX_PLY] = {};
+    Move32 prev_best_move{0};
+
+    SearchContext(Board& b, TTable& t, int time_ms)
+        : board(b), tt(t),
+          start_time(std::chrono::steady_clock::now()),
+          time_limit_ms(time_ms) {}
+
+    bool check_time() {
+        if ((nodes_searched & 2047) == 0) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+            if (elapsed >= time_limit_ms) {
+                stop_search = true;
             }
         }
-    }
-}
-
-static void update_killer(int ply, Move32 move) {
-    // Don't store captures as killers
-    if (move.is_capture()) return;
-
-    // Don't store if already first killer
-    if (killers[ply][0].same_move(move)) return;
-
-    // Shift and insert
-    killers[ply][1] = killers[ply][0];
-    killers[ply][0] = move;
-}
-
-static void update_history(Color color, Move32 move, int depth) {
-    // Only update for quiet moves
-    if (move.is_capture()) return;
-
-    int bonus = depth * depth;
-    int& h = history[(int)color][move.from()][move.to()];
-    h += bonus;
-
-    // Cap to prevent overflow
-    if (h > HISTORY_MAX) h = HISTORY_MAX;
-}
-
-// Triangular PV table: pv_table[ply] stores the PV from that ply onwards
-static Move32 pv_table[MAX_PLY][MAX_PLY];
-static int pv_length[MAX_PLY];
-
-// Previous iteration's best move for root ordering
-static Move32 prev_best_move;
-
-static void init_pv(int ply) {
-    pv_length[ply] = ply;
-}
-
-static void update_pv(int ply, Move32 move) {
-    pv_table[ply][ply] = move;
-    // Copy child's PV
-    for (int i = ply + 1; i < pv_length[ply + 1]; ++i) {
-        pv_table[ply][i] = pv_table[ply + 1][i];
-    }
-    pv_length[ply] = pv_length[ply + 1];
-}
-
-// Score a move for ordering purposes
-// Higher score = searched first
-// For noisy moves: MVV-LVA + promotion bonus
-// For quiet moves: killer bonus + history score
-static int score_move(const Move32& move, const Board& board, int ply) {
-    int score = 0;
-
-    // Captures: MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
-    if (move.is_capture()) {
-        int victim_value = MVV_LVA_VALUES[(int)move.captured()];
-        int attacker_value = MVV_LVA_VALUES[(int)board.pieces_on_square[move.from()]];
-        // Scale victim by 10 so even bad captures are tried before quiet moves
-        score += 10000 + victim_value * 10 - attacker_value;
+        return stop_search;
     }
 
-    // Promotions (queen promotion is best)
-    if (move.is_promotion()) {
-        score += 9000 + MVV_LVA_VALUES[(int)move.promotion()];
+    void update_killer(int ply, Move32 move) {
+        if (move.is_capture()) return;
+        if (killers[ply][0].same_move(move)) return;
+        killers[ply][1] = killers[ply][0];
+        killers[ply][0] = move;
     }
 
-    // Quiet move ordering: killers then history
-    if (!move.is_capture() && !move.is_promotion()) {
-        if (killers[ply][0].same_move(move)) {
-            score += KILLER_SCORE_1;
-        } else if (killers[ply][1].same_move(move)) {
-            score += KILLER_SCORE_2;
-        } else {
-            // History score
-            Color color = board.turn;
-            score += history[(int)color][move.from()][move.to()];
+    void update_history(Color color, Move32 move, int depth) {
+        if (move.is_capture()) return;
+        int bonus = depth * depth;
+        int& h = history[(int)color][move.from()][move.to()];
+        h += bonus;
+        if (h > HISTORY_MAX) h = HISTORY_MAX;
+    }
+
+    void init_pv(int ply) {
+        pv_length[ply] = ply;
+    }
+
+    void update_pv(int ply, Move32 move) {
+        pv_table[ply][ply] = move;
+        for (int i = ply + 1; i < pv_length[ply + 1]; ++i) {
+            pv_table[ply][i] = pv_table[ply + 1][i];
+        }
+        pv_length[ply] = pv_length[ply + 1];
+    }
+};
+
+// ============================================================================
+// MovePicker - staged move generation with ordering
+// ============================================================================
+
+struct MovePicker {
+    enum Stage { TT_MOVE, PREV_BEST, NOISY, QUIET, DONE };
+
+    SearchContext& ctx;
+    int ply;
+    Move32 tt_move;
+    Move32 prev_best;
+
+    Stage stage;
+    MoveList moves;
+    int index;
+
+    MovePicker(SearchContext& ctx, int ply, Move32 tt_move, Move32 prev_best = Move32(0))
+        : ctx(ctx), ply(ply), tt_move(tt_move), prev_best(prev_best),
+          stage(TT_MOVE), index(0) {}
+
+    Move32 next() {
+        switch (stage) {
+        case TT_MOVE:
+            stage = PREV_BEST;
+            if (tt_move.data != 0) {
+                return tt_move;
+            }
+            [[fallthrough]];
+
+        case PREV_BEST:
+            stage = NOISY;
+            if (prev_best.data != 0 && !prev_best.same_move(tt_move)) {
+                return prev_best;
+            }
+            // Generate noisy moves for next stage
+            moves = generate_moves<MoveType::Noisy>(ctx.board);
+            index = 0;
+            [[fallthrough]];
+
+        case NOISY:
+            while (index < moves.size) {
+                pick_best();
+                Move32 move = moves[index++];
+                if (should_skip(move)) continue;
+                return move;
+            }
+            // Generate quiet moves for next stage
+            moves = generate_moves<MoveType::Quiet>(ctx.board);
+            index = 0;
+            stage = QUIET;
+            [[fallthrough]];
+
+        case QUIET:
+            while (index < moves.size) {
+                pick_best();
+                Move32 move = moves[index++];
+                if (should_skip(move)) continue;
+                return move;
+            }
+            stage = DONE;
+            [[fallthrough]];
+
+        case DONE:
+            return Move32(0);
+        }
+        return Move32(0);
+    }
+
+private:
+    bool should_skip(const Move32& move) {
+        return (tt_move.data != 0 && move.same_move(tt_move)) ||
+               (prev_best.data != 0 && move.same_move(prev_best));
+    }
+
+    int score_move(const Move32& move) {
+        int score = 0;
+
+        if (move.is_capture()) {
+            int victim_value = MVV_LVA_VALUES[(int)move.captured()];
+            int attacker_value = MVV_LVA_VALUES[(int)ctx.board.pieces_on_square[move.from()]];
+            score += 10000 + victim_value * 10 - attacker_value;
+        }
+
+        if (move.is_promotion()) {
+            score += 9000 + MVV_LVA_VALUES[(int)move.promotion()];
+        }
+
+        if (!move.is_capture() && !move.is_promotion()) {
+            if (ctx.killers[ply][0].same_move(move)) {
+                score += KILLER_SCORE_1;
+            } else if (ctx.killers[ply][1].same_move(move)) {
+                score += KILLER_SCORE_2;
+            } else {
+                score += ctx.history[(int)ctx.board.turn][move.from()][move.to()];
+            }
+        }
+
+        return score;
+    }
+
+    void pick_best() {
+        int best_idx = index;
+        int best_score = score_move(moves[index]);
+
+        for (int i = index + 1; i < moves.size; ++i) {
+            int score = score_move(moves[i]);
+            if (score > best_score) {
+                best_score = score;
+                best_idx = i;
+            }
+        }
+
+        if (best_idx != index) {
+            std::swap(moves[index], moves[best_idx]);
         }
     }
+};
 
-    return score;
-}
+// ============================================================================
+// Search functions
+// ============================================================================
 
-// Pick the best move from index 'start' onwards and swap it to 'start'
-static void pick_move(MoveList& moves, int start, const Board& board, int ply) {
-    int best_idx = start;
-    int best_score = score_move(moves[start], board, ply);
-
-    for (int i = start + 1; i < moves.size; ++i) {
-        int score = score_move(moves[i], board, ply);
-        if (score > best_score) {
-            best_score = score;
-            best_idx = i;
-        }
-    }
-
-    if (best_idx != start) {
-        std::swap(moves[start], moves[best_idx]);
-    }
-}
-
-// Search state
-static std::chrono::steady_clock::time_point start_time;
-static int time_limit;
-static bool stop_search;
-static u64 nodes_searched;
-
-static bool check_time() {
-    if ((nodes_searched & 2047) == 0) {
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
-        if (elapsed >= time_limit) {
-            stop_search = true;
-        }
-    }
-    return stop_search;
-}
-
-// Check if current side is in check
 static bool in_check(const Board& board) {
     Color us = board.turn;
     Color them = opposite(us);
     return is_attacked(board.king_sq[(int)us], them, board);
 }
 
-// Quiescence search - only searches captures and promotions
-static int quiescence(Board& board, int alpha, int beta, int ply) {
-    if (check_time()) return 0;
+// Forward declarations
+static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int ply, bool is_pv_node);
 
-    nodes_searched++;
+static int quiescence(SearchContext& ctx, int alpha, int beta, int ply) {
+    if (ctx.check_time()) return 0;
 
-    bool in_chk = in_check(board);
+    ctx.nodes_searched++;
 
-    // Stand-pat: evaluate the position without making any move
-    // But if in check, we must make a move - can't use stand_pat
+    bool in_chk = in_check(ctx.board);
+
     if (!in_chk) {
-        int stand_pat = evaluate(board);
+        int stand_pat = evaluate(ctx.board);
 
         if (stand_pat >= beta) {
             return beta;
@@ -191,33 +241,49 @@ static int quiescence(Board& board, int alpha, int beta, int ply) {
         }
     }
 
-    // When in check, generate all moves (must find escape)
-    // Otherwise, only generate noisy moves (captures + promotions)
-    MoveList moves = in_chk ? generate_moves(board)
-                            : generate_moves<MoveType::Noisy>(board);
+    // When in check, generate all moves; otherwise only noisy
+    MoveList moves = in_chk ? generate_moves(ctx.board)
+                            : generate_moves<MoveType::Noisy>(ctx.board);
 
     int legal_moves = 0;
 
     for (int i = 0; i < moves.size; ++i) {
-        // Pick best remaining move
-        pick_move(moves, i, board, ply);
+        // Simple selection sort for qsearch (no killer/history needed)
+        int best_idx = i;
+        int best_score = -INFINITY_SCORE;
+        for (int j = i; j < moves.size; ++j) {
+            int score = 0;
+            if (moves[j].is_capture()) {
+                int victim = MVV_LVA_VALUES[(int)moves[j].captured()];
+                int attacker = MVV_LVA_VALUES[(int)ctx.board.pieces_on_square[moves[j].from()]];
+                score = victim * 10 - attacker;
+            }
+            if (moves[j].is_promotion()) {
+                score += MVV_LVA_VALUES[(int)moves[j].promotion()];
+            }
+            if (score > best_score) {
+                best_score = score;
+                best_idx = j;
+            }
+        }
+        if (best_idx != i) std::swap(moves[i], moves[best_idx]);
 
         Move32& move = moves[i];
 
-        make_move(board, move);
+        make_move(ctx.board, move);
 
-        if (is_illegal(board)) {
-            unmake_move(board, move);
+        if (is_illegal(ctx.board)) {
+            unmake_move(ctx.board, move);
             continue;
         }
 
         legal_moves++;
 
-        int score = -quiescence(board, -beta, -alpha, ply + 1);
+        int score = -quiescence(ctx, -beta, -alpha, ply + 1);
 
-        unmake_move(board, move);
+        unmake_move(ctx.board, move);
 
-        if (stop_search) return 0;
+        if (ctx.stop_search) return 0;
 
         if (score >= beta) {
             return beta;
@@ -228,7 +294,6 @@ static int quiescence(Board& board, int alpha, int beta, int ply) {
         }
     }
 
-    // If in check and no legal moves, it's checkmate
     if (in_chk && legal_moves == 0) {
         return -MATE_SCORE + ply;
     }
@@ -236,112 +301,54 @@ static int quiescence(Board& board, int alpha, int beta, int ply) {
     return alpha;
 }
 
-// Forward declaration
-static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, int ply, bool is_pv_node);
+static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int ply, bool is_pv_node) {
+    if (ctx.check_time()) return 0;
 
-// Helper to search a single move with PVS
-// Returns the score, or INFINITY_SCORE if the move is illegal
-static int search_move_pvs(Board& board, TTable& tt, Move32& move, int depth, int alpha, int beta,
-                           int ply, bool is_pv_node, bool found_pv) {
-    make_move(board, move);
+    ctx.nodes_searched++;
+    ctx.init_pv(ply);
 
-    if (is_illegal(board)) {
-        unmake_move(board, move);
-        return INFINITY_SCORE;  // Sentinel: illegal move
-    }
-
-    int score;
-
-    if (found_pv) {
-        // Null-window search (scout)
-        score = -alpha_beta(board, tt, depth - 1, -alpha - 1, -alpha, ply + 1, false);
-
-        // Re-search with full window if it might be better
-        if (score > alpha && score < beta && !stop_search) {
-            score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, ply + 1, true);
-        }
-    } else {
-        // Full window search for first move
-        score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, ply + 1, is_pv_node);
-    }
-
-    unmake_move(board, move);
-    return score;
-}
-
-static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, int ply, bool is_pv_node) {
-    if (check_time()) return 0;
-
-    nodes_searched++;
-
-    // Initialize PV for this ply
-    init_pv(ply);
-
-    // TT probe - only use for cutoffs in non-PV nodes
+    // TT probe
     int tt_score;
     Move32 tt_move(0);
-    bool tt_hit = tt.probe(board.hash, depth, alpha, beta, tt_score, tt_move);
+    bool tt_hit = ctx.tt.probe(ctx.board.hash, depth, alpha, beta, tt_score, tt_move);
     if (tt_hit && !is_pv_node) {
         return tt_score;
     }
 
-    // Leaf node - enter quiescence search
     if (depth == 0) {
-        return quiescence(board, alpha, beta, ply);
+        return quiescence(ctx, alpha, beta, ply);
     }
 
     int best_score = -INFINITY_SCORE;
     Move32 best_move(0);
     int legal_moves = 0;
-    bool tt_move_searched = false;
     bool found_pv = false;
 
-    // Try TT move first if available
-    if (tt_move.data != 0) {
-        int score = search_move_pvs(board, tt, tt_move, depth, alpha, beta, ply, is_pv_node, found_pv);
-        if (score != INFINITY_SCORE) {  // Legal move
-            legal_moves++;
+    MovePicker picker(ctx, ply, tt_move);
+    while (Move32 move = picker.next()) {
+        make_move(ctx.board, move);
 
-            if (stop_search) return 0;
-
-            if (score > best_score) {
-                best_score = score;
-                best_move = tt_move;
-            }
-
-            if (score >= beta) {
-                update_killer(ply, tt_move);
-                update_history(board.turn, tt_move, depth);
-                tt.store(board.hash, depth, beta, TT_LOWER, tt_move);
-                return beta;
-            }
-
-            if (score > alpha) {
-                alpha = score;
-                found_pv = true;
-                update_pv(ply, tt_move);
-            }
-        }
-        tt_move_searched = true;
-    }
-
-    // Stage 1: Noisy moves (captures + promotions)
-    MoveList noisy = generate_moves<MoveType::Noisy>(board);
-    for (int i = 0; i < noisy.size; ++i) {
-        pick_move(noisy, i, board, ply);
-        Move32& move = noisy[i];
-
-        // Skip if already searched as TT move
-        if (tt_move_searched && move.same_move(tt_move)) {
+        if (is_illegal(ctx.board)) {
+            unmake_move(ctx.board, move);
             continue;
         }
 
-        int score = search_move_pvs(board, tt, move, depth, alpha, beta, ply, is_pv_node, found_pv);
-        if (score == INFINITY_SCORE) continue;  // Illegal move
-
         legal_moves++;
 
-        if (stop_search) return 0;
+        // PVS search
+        int score;
+        if (found_pv) {
+            score = -alpha_beta(ctx, depth - 1, -alpha - 1, -alpha, ply + 1, false);
+            if (score > alpha && score < beta && !ctx.stop_search) {
+                score = -alpha_beta(ctx, depth - 1, -beta, -alpha, ply + 1, true);
+            }
+        } else {
+            score = -alpha_beta(ctx, depth - 1, -beta, -alpha, ply + 1, is_pv_node);
+        }
+
+        unmake_move(ctx.board, move);
+
+        if (ctx.stop_search) return 0;
 
         if (score > best_score) {
             best_score = score;
@@ -349,178 +356,73 @@ static int alpha_beta(Board& board, TTable& tt, int depth, int alpha, int beta, 
         }
 
         if (score >= beta) {
-            update_killer(ply, move);
-            update_history(board.turn, move, depth);
-            tt.store(board.hash, depth, beta, TT_LOWER, move);
+            ctx.update_killer(ply, move);
+            ctx.update_history(ctx.board.turn, move, depth);
+            ctx.tt.store(ctx.board.hash, depth, beta, TT_LOWER, move);
             return beta;
         }
 
         if (score > alpha) {
             alpha = score;
             found_pv = true;
-            update_pv(ply, move);
+            ctx.update_pv(ply, move);
         }
     }
 
-    // Stage 2: Quiet moves
-    MoveList quiet = generate_moves<MoveType::Quiet>(board);
-    for (int i = 0; i < quiet.size; ++i) {
-        pick_move(quiet, i, board, ply);
-        Move32& move = quiet[i];
-
-        // Skip if already searched as TT move
-        if (tt_move_searched && move.same_move(tt_move)) {
-            continue;
-        }
-
-        int score = search_move_pvs(board, tt, move, depth, alpha, beta, ply, is_pv_node, found_pv);
-        if (score == INFINITY_SCORE) continue;  // Illegal move
-
-        legal_moves++;
-
-        if (stop_search) return 0;
-
-        if (score > best_score) {
-            best_score = score;
-            best_move = move;
-        }
-
-        if (score >= beta) {
-            update_killer(ply, move);
-            update_history(board.turn, move, depth);
-            tt.store(board.hash, depth, beta, TT_LOWER, move);
-            return beta;
-        }
-
-        if (score > alpha) {
-            alpha = score;
-            found_pv = true;
-            update_pv(ply, move);
-        }
-    }
-
-    // No legal moves: checkmate or stalemate
     if (legal_moves == 0) {
-        if (in_check(board)) {
-            return -MATE_SCORE + ply;  // Checkmate
-        }
-        return 0;  // Stalemate
+        return in_check(ctx.board) ? (-MATE_SCORE + ply) : 0;
     }
 
-    // Store in TT
     TTFlag flag = found_pv ? TT_EXACT : TT_UPPER;
-    tt.store(board.hash, depth, best_score, flag, best_move);
+    ctx.tt.store(ctx.board.hash, depth, best_score, flag, best_move);
 
     return best_score;
 }
 
-// Helper to search a move at root level with PVS
-// Returns the score, or INFINITY_SCORE if illegal
-static int search_root_move_pvs(Board& board, TTable& tt, Move32& move, int depth,
-                                int alpha, int beta, bool found_pv) {
-    make_move(board, move);
+static std::pair<Move32, int> search_root(SearchContext& ctx, int depth) {
+    ctx.init_pv(0);
 
-    if (is_illegal(board)) {
-        unmake_move(board, move);
-        return INFINITY_SCORE;  // Sentinel: illegal move
-    }
-
-    int score;
-
-    if (found_pv) {
-        // Null-window search
-        score = -alpha_beta(board, tt, depth - 1, -alpha - 1, -alpha, 1, false);
-
-        // Re-search with full window if needed
-        if (score > alpha && score < beta && !stop_search) {
-            score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, 1, true);
-        }
-    } else {
-        // Full window search for first move
-        score = -alpha_beta(board, tt, depth - 1, -beta, -alpha, 1, true);
-    }
-
-    unmake_move(board, move);
-    return score;
-}
-
-// Root search - returns best move and score
-static std::pair<Move32, int> search_root(Board& board, TTable& tt, int depth) {
-    // Initialize PV for root
-    init_pv(0);
-
-    // Try TT move first if available
+    // TT probe for move ordering hint
     int tt_score;
     Move32 tt_move(0);
-    tt.probe(board.hash, depth, -INFINITY_SCORE, INFINITY_SCORE, tt_score, tt_move);
+    ctx.tt.probe(ctx.board.hash, depth, -INFINITY_SCORE, INFINITY_SCORE, tt_score, tt_move);
 
     int alpha = -INFINITY_SCORE;
     int beta = INFINITY_SCORE;
     Move32 best_move(0);
     int best_score = -INFINITY_SCORE;
-    bool prev_best_searched = false;
-    bool tt_move_searched = false;
     bool found_pv = false;
 
-    // Try previous iteration's best move first (if different from TT move)
-    if (prev_best_move.data != 0) {
-        int score = search_root_move_pvs(board, tt, prev_best_move, depth, alpha, beta, found_pv);
-        if (score != INFINITY_SCORE) {
-            if (stop_search) return {prev_best_move, score};
+    MovePicker picker(ctx, 0, tt_move, ctx.prev_best_move);
+    while (Move32 move = picker.next()) {
+        make_move(ctx.board, move);
 
-            if (score > best_score) {
+        if (is_illegal(ctx.board)) {
+            unmake_move(ctx.board, move);
+            continue;
+        }
+
+        // PVS search
+        int score;
+        if (found_pv) {
+            score = -alpha_beta(ctx, depth - 1, -alpha - 1, -alpha, 1, false);
+            if (score > alpha && score < beta && !ctx.stop_search) {
+                score = -alpha_beta(ctx, depth - 1, -beta, -alpha, 1, true);
+            }
+        } else {
+            score = -alpha_beta(ctx, depth - 1, -beta, -alpha, 1, true);
+        }
+
+        unmake_move(ctx.board, move);
+
+        if (ctx.stop_search) {
+            // Use partial result if we have one
+            if (best_move.data == 0) {
+                best_move = move;
                 best_score = score;
-                best_move = prev_best_move;
             }
-
-            if (score > alpha) {
-                alpha = score;
-                found_pv = true;
-                update_pv(0, prev_best_move);
-            }
+            return {best_move, best_score};
         }
-        prev_best_searched = true;
-
-        // Mark TT move as searched if it's the same
-        if (tt_move.data != 0 && tt_move.same_move(prev_best_move)) {
-            tt_move_searched = true;
-        }
-    }
-
-    // Try TT move if not already searched
-    if (tt_move.data != 0 && !tt_move_searched) {
-        int score = search_root_move_pvs(board, tt, tt_move, depth, alpha, beta, found_pv);
-        if (score != INFINITY_SCORE) {
-            if (stop_search) return {best_move.data != 0 ? best_move : tt_move, best_score != -INFINITY_SCORE ? best_score : score};
-
-            if (score > best_score) {
-                best_score = score;
-                best_move = tt_move;
-            }
-
-            if (score > alpha) {
-                alpha = score;
-                found_pv = true;
-                update_pv(0, tt_move);
-            }
-        }
-        tt_move_searched = true;
-    }
-
-    // Stage 1: Noisy moves (captures + promotions)
-    MoveList noisy = generate_moves<MoveType::Noisy>(board);
-    for (int i = 0; i < noisy.size; ++i) {
-        pick_move(noisy, i, board, 0);
-        Move32& move = noisy[i];
-
-        // Skip if already searched
-        if (prev_best_searched && move.same_move(prev_best_move)) continue;
-        if (tt_move_searched && move.same_move(tt_move)) continue;
-
-        int score = search_root_move_pvs(board, tt, move, depth, alpha, beta, found_pv);
-        if (score == INFINITY_SCORE) continue;
-
-        if (stop_search) return {best_move, best_score};
 
         if (score > best_score) {
             best_score = score;
@@ -530,55 +432,19 @@ static std::pair<Move32, int> search_root(Board& board, TTable& tt, int depth) {
         if (score > alpha) {
             alpha = score;
             found_pv = true;
-            update_pv(0, move);
+            ctx.update_pv(0, move);
         }
     }
 
-    // Stage 2: Quiet moves
-    MoveList quiet = generate_moves<MoveType::Quiet>(board);
-    for (int i = 0; i < quiet.size; ++i) {
-        pick_move(quiet, i, board, 0);
-        Move32& move = quiet[i];
-
-        // Skip if already searched
-        if (prev_best_searched && move.same_move(prev_best_move)) continue;
-        if (tt_move_searched && move.same_move(tt_move)) continue;
-
-        int score = search_root_move_pvs(board, tt, move, depth, alpha, beta, found_pv);
-        if (score == INFINITY_SCORE) continue;
-
-        if (stop_search) return {best_move, best_score};
-
-        if (score > best_score) {
-            best_score = score;
-            best_move = move;
-        }
-
-        if (score > alpha) {
-            alpha = score;
-            found_pv = true;
-            update_pv(0, move);
-        }
-    }
-
-    // Store root position in TT
-    if (!stop_search && best_move.data != 0) {
-        tt.store(board.hash, depth, best_score, TT_EXACT, best_move);
+    if (!ctx.stop_search && best_move.data != 0) {
+        ctx.tt.store(ctx.board.hash, depth, best_score, TT_EXACT, best_move);
     }
 
     return {best_move, best_score};
 }
 
 SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
-    start_time = std::chrono::steady_clock::now();
-    time_limit = time_limit_ms;
-    stop_search = false;
-    nodes_searched = 0;
-
-    // Clear move ordering tables for new search
-    clear_killers();
-    clear_history();
-    prev_best_move = Move32(0);
+    SearchContext ctx(board, tt, time_limit_ms);
 
     SearchResult result;
     result.best_move = Move32(0);
@@ -587,11 +453,9 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
     result.pv_length = 0;
 
     for (int depth = 1; depth <= MAX_PLY; ++depth) {
-        auto [move, score] = search_root(board, tt, depth);
+        auto [move, score] = search_root(ctx, depth);
 
-        if (stop_search) {
-            // If we completed searching at least the first move (the TT/best move from
-            // previous iteration), use that information rather than discarding it
+        if (ctx.stop_search) {
             if (move.data != 0) {
                 result.best_move = move;
                 result.score = score;
@@ -604,37 +468,33 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
         result.depth = depth;
 
         // Copy PV to result
-        result.pv_length = pv_length[0];
-        for (int i = 0; i < pv_length[0]; ++i) {
-            result.pv[i] = pv_table[0][i];
+        result.pv_length = ctx.pv_length[0];
+        for (int i = 0; i < ctx.pv_length[0]; ++i) {
+            result.pv[i] = ctx.pv_table[0][i];
         }
 
         // Save best move for next iteration's move ordering
-        prev_best_move = move;
+        ctx.prev_best_move = move;
 
-        // Print UCI-style info with full PV
+        // Print UCI info
         auto now = std::chrono::steady_clock::now();
-        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx.start_time).count();
 
         std::cout << "info depth " << depth
                   << " score cp " << score
-                  << " nodes " << nodes_searched
+                  << " nodes " << ctx.nodes_searched
                   << " time " << elapsed_ms
                   << " pv";
 
-        // Output full PV line
         for (int i = 0; i < result.pv_length; ++i) {
             std::cout << " " << result.pv[i].to_uci();
         }
         std::cout << std::endl;
 
-        // Early exit if we found a mate
         if (score >= MATE_SCORE - MAX_PLY || score <= -MATE_SCORE + MAX_PLY) {
             break;
         }
     }
-
-    // Note: bestmove is output by caller (UCI loop) to avoid duplication
 
     return result;
 }

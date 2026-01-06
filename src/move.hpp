@@ -36,6 +36,7 @@ struct Move32 {
 
     constexpr bool is_capture() const { return captured() != Piece::None; }
     constexpr bool is_promotion() const { return promotion() != Piece::None; }
+    constexpr explicit operator bool() const { return data != 0; }
 
     // Compare move identity (from, to, promotion) - ignores undo info
     constexpr bool same_move(const Move32& other) const {
