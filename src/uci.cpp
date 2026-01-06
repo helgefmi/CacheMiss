@@ -108,6 +108,30 @@ static int parse_go(const std::string& line, const Board& board) {
     return 1000;
 }
 
+// Parse "setoption name <name> value <value>"
+static void parse_setoption(const std::string& line, size_t& hash_mb, bool& hash_changed) {
+    std::istringstream iss(line);
+    std::string token;
+    iss >> token;  // "setoption"
+
+    std::string name, value;
+    while (iss >> token) {
+        if (token == "name") {
+            iss >> name;
+        } else if (token == "value") {
+            iss >> value;
+        }
+    }
+
+    if (name == "Hash" && !value.empty()) {
+        size_t new_hash = std::stoul(value);
+        if (new_hash >= 1 && new_hash <= 65536) {
+            hash_mb = new_hash;
+            hash_changed = true;
+        }
+    }
+}
+
 void uci_loop(size_t hash_mb) {
     Board board;
     TTable tt(hash_mb);
@@ -133,6 +157,13 @@ void uci_loop(size_t hash_mb) {
             tt.clear();
             board = Board();
         }
+        else if (cmd == "setoption") {
+            bool hash_changed = false;
+            parse_setoption(line, hash_mb, hash_changed);
+            if (hash_changed) {
+                tt = TTable(hash_mb);
+            }
+        }
         else if (cmd == "position") {
             parse_position(line, board);
         }
@@ -143,7 +174,8 @@ void uci_loop(size_t hash_mb) {
         }
         else if (cmd == "quit") {
             break;
-        } else {
+        }
+        else {
             std::cerr << "Unknown command: " << cmd << std::endl;
         }
     }

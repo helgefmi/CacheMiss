@@ -30,6 +30,48 @@ static std::mutex log_mutex;
 static std::ofstream log_file;
 static bool logging_enabled = false;
 
+// ============================================================================
+// Console message buffer (for TUI display)
+// ============================================================================
+class ConsoleBuffer {
+    std::vector<std::string> messages;
+    mutable std::mutex mtx;
+    static constexpr size_t MAX_MESSAGES = 100;
+
+public:
+    void add(const std::string& msg) {
+        std::lock_guard<std::mutex> lock(mtx);
+        messages.push_back(msg);
+        if (messages.size() > MAX_MESSAGES) {
+            messages.erase(messages.begin());
+        }
+    }
+
+    std::vector<std::string> get_all() const {
+        std::lock_guard<std::mutex> lock(mtx);
+        return messages;
+    }
+
+    std::vector<std::string> get_last(size_t n) const {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (messages.size() <= n) {
+            return messages;
+        }
+        return std::vector<std::string>(messages.end() - n, messages.end());
+    }
+
+    size_t size() const {
+        std::lock_guard<std::mutex> lock(mtx);
+        return messages.size();
+    }
+};
+
+static ConsoleBuffer console_buffer;
+
+void console_msg(const std::string& msg) {
+    console_buffer.add(msg);
+}
+
 void log_init(const std::string& filename) {
     std::lock_guard<std::mutex> lock(log_mutex);
     log_file.open(filename, std::ios::out | std::ios::trunc);
@@ -75,6 +117,7 @@ using namespace ftxui;
 class Engine {
     FILE* to_engine;
     int from_engine_fd;  // Raw file descriptor for reading (no FILE* buffering issues)
+    int stderr_fd;       // File descriptor for engine's stderr
     std::string read_buffer;  // Our own line buffer
     std::string name;
     std::string path;
@@ -82,6 +125,8 @@ class Engine {
     static int instance_counter;
     int instance_id;
     int current_game_id = -1;  // Set by caller to include in logs
+    std::thread stderr_thread;
+    std::atomic<bool> stopping{false};
 
     std::string log_prefix() const {
         if (current_game_id >= 0) {
@@ -90,13 +135,53 @@ class Engine {
         return "Engine[" + std::to_string(instance_id) + "]";
     }
 
+    std::string short_name() const {
+        size_t pos = path.rfind('/');
+        return (pos != std::string::npos) ? path.substr(pos + 1) : path;
+    }
+
+    void stderr_reader() {
+        std::string buffer;
+        char buf[1024];
+        while (!stopping.load()) {
+            struct pollfd pfd;
+            pfd.fd = stderr_fd;
+            pfd.events = POLLIN;
+
+            int ret = poll(&pfd, 1, 100);  // 100ms timeout
+            if (ret <= 0) continue;
+
+            if (pfd.revents & POLLIN) {
+                ssize_t n = read(stderr_fd, buf, sizeof(buf) - 1);
+                if (n <= 0) break;
+                buf[n] = '\0';
+                buffer += buf;
+
+                // Process complete lines
+                size_t pos;
+                while ((pos = buffer.find('\n')) != std::string::npos) {
+                    std::string line = buffer.substr(0, pos);
+                    buffer.erase(0, pos + 1);
+                    if (!line.empty()) {
+                        console_msg("[" + short_name() + "] " + line);
+                    }
+                }
+            }
+            if (pfd.revents & (POLLHUP | POLLERR)) break;
+        }
+        // Flush any remaining partial line
+        if (!buffer.empty()) {
+            console_msg("[" + short_name() + "] " + buffer);
+        }
+    }
+
 public:
     Engine(const std::string& engine_path) : path(engine_path), instance_id(++instance_counter) {
         log_msg("Engine[" + std::to_string(instance_id) + "] creating: " + engine_path);
 
-        // Create bidirectional pipe to engine
-        int to_child[2], from_child[2];
-        if (pipe(to_child) < 0 || pipe(from_child) < 0) {
+        // Create pipes: stdin, stdout, and stderr
+        int to_child[2], from_child[2], err_child[2];
+        if (pipe(to_child) < 0 || pipe(from_child) < 0 || pipe(err_child) < 0) {
             log_msg("Engine[" + std::to_string(instance_id) + "] FAILED to create pipes");
             throw std::runtime_error("Failed to create pipes");
         }
@@ -111,10 +196,13 @@ public:
             // Child process
             close(to_child[1]);
             close(from_child[0]);
+            close(err_child[0]);
             dup2(to_child[0], STDIN_FILENO);
             dup2(from_child[1], STDOUT_FILENO);
+            dup2(err_child[1], STDERR_FILENO);
             close(to_child[0]);
             close(from_child[1]);
+            close(err_child[1]);
             execlp(engine_path.c_str(), engine_path.c_str(), nullptr);
             _exit(1);
         }
@@ -124,15 +212,20 @@ public:
         log_msg("Engine[" + std::to_string(instance_id) + "] forked, child pid=" + std::to_string(pid));
         close(to_child[0]);
         close(from_child[1]);
+        close(err_child[1]);
         to_engine = fdopen(to_child[1], "w");
         from_engine_fd = from_child[0];  // Keep raw fd for reading
+        stderr_fd = err_child[0];        // Keep raw fd for stderr
 
-        if (!to_engine || from_engine_fd < 0) {
+        if (!to_engine || from_engine_fd < 0 || stderr_fd < 0) {
             log_msg("Engine[" + std::to_string(instance_id) + "] FAILED to open streams");
             throw std::runtime_error("Failed to open engine streams");
         }
 
         setvbuf(to_engine, nullptr, _IOLBF, 0);  // Line buffered for writes
+
+        // Start stderr reader thread
+        stderr_thread = std::thread(&Engine::stderr_reader, this);
 
         // Initialize UCI
         log_msg("Engine[" + std::to_string(instance_id) + "] sending 'uci'");
@@ -155,6 +248,9 @@ public:
 
     ~Engine() {
         // IMPORTANT: Destructors must never throw exceptions
+        // Signal stderr reader to stop
+        stopping.store(true);
+
         if (to_engine) {
             // Try to send quit gracefully, ignore any errors
             fprintf(to_engine, "quit\n");
@@ -165,6 +261,14 @@ public:
         if (from_engine_fd >= 0) {
             close(from_engine_fd);
             from_engine_fd = -1;
+        }
+        if (stderr_fd >= 0) {
+            close(stderr_fd);
+            stderr_fd = -1;
+        }
+        // Wait for stderr reader thread to finish
+        if (stderr_thread.joinable()) {
+            stderr_thread.join();
         }
         // Reap the child process to avoid zombies
         if (child_pid > 0) {
@@ -949,7 +1053,7 @@ void worker_thread(
                 // Game-level error (e.g., engine crashed mid-game)
                 // Mark as loss for the side whose engine crashed, but we can't tell which
                 // So mark as draw and continue
-                std::cerr << "\nGame " << task.game_id << " error: " << e.what() << std::endl;
+                console_msg("Game " + std::to_string(task.game_id) + " error: " + e.what());
 
                 GameOutcome outcome;
                 outcome.result = GameResult::Draw;
@@ -972,7 +1076,7 @@ void worker_thread(
         }
     } catch (const std::exception& e) {
         // Thread-level error (e.g., engine failed to start)
-        std::cerr << "\nThread " << thread_id << " fatal error: " << e.what() << std::endl;
+        console_msg("Thread " + std::to_string(thread_id) + " fatal error: " + e.what());
         fatal_error.store(true);
         screen.Exit();
     }
@@ -989,9 +1093,13 @@ void print_usage(const char* prog) {
               << "  -hash <mb>       Hash table size per engine (default: 512)\n"
               << "  -log <file>      Enable verbose logging to file\n"
               << "\nControls:\n"
-              << "  q/Esc            Quit\n"
-              << "  PgUp/PgDn        Scroll up/down\n"
-              << "  Home/End         Jump to top/bottom\n";
+              << "  Arrows           Select game\n"
+              << "  ,/.              Previous/next move\n"
+              << "  ;/:              Jump 10 moves\n"
+              << "  Home/End         First/last move\n"
+              << "  PgUp/PgDn        Scroll games\n"
+              << "  |                Toggle console\n"
+              << "  q/Esc            Quit\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -1042,6 +1150,11 @@ int main(int argc, char* argv[]) {
                 std::to_string(num_threads) + ", hash=" + std::to_string(hash_mb) + "MB");
     }
 
+    // Add initialization messages to console
+    console_msg("Match: " + engine1_path + " vs " + engine2_path);
+    console_msg("Options: movetime=" + std::to_string(movetime_ms) + "ms, threads=" +
+                std::to_string(num_threads) + ", hash=" + std::to_string(hash_mb) + "MB");
+
     if (num_threads < 1) num_threads = 1;
 
     // Collect positions
@@ -1079,6 +1192,8 @@ int main(int argc, char* argv[]) {
 
     int total_games = game_id;
     log_msg("Total games to play: " + std::to_string(total_games));
+    console_msg("Loaded " + std::to_string(positions.size()) + " position(s), " +
+                std::to_string(total_games) + " games total");
 
     // Don't spawn more threads than games - each thread creates 2 engine processes
     if (num_threads > total_games) {
@@ -1103,6 +1218,7 @@ int main(int argc, char* argv[]) {
     int selected_game = 0;     // Currently selected game card
     int scroll_row = 0;        // First visible row
     int cols = 1;              // Columns (computed in renderer)
+    bool console_expanded = false;  // Whether console panel is expanded
 
     // Shared flags for thread coordination
     std::atomic<bool> fatal_error{false};
@@ -1137,7 +1253,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Help line
-        Element help = text("Arrows=select  ,/.=move  ;/:=10moves  Home/End=first/last  q=quit") | dim | center;
+        Element help = text("Arrows=select  ,/.=move  ;/:=10moves  Home/End=first/last  |=console  q=quit") | dim | center;
 
         // Calculate columns and card width based on terminal width
         int term_width = Terminal::Size().dimx;
@@ -1196,14 +1312,59 @@ int main(int argc, char* argv[]) {
                                   "/" + std::to_string(total_rows);
         Element scroll_indicator = text(scroll_info) | dim | center;
 
-        return vbox({
-            header,
-            help,
-            separator(),
-            game_grid | flex,
-            separator(),
-            scroll_indicator,
-        }) | border;
+        // Console panel
+        Element console_panel;
+        if (console_expanded) {
+            // Full console view
+            auto messages = console_buffer.get_all();
+            Elements console_lines;
+            for (const auto& msg : messages) {
+                console_lines.push_back(text(msg));
+            }
+            if (console_lines.empty()) {
+                console_lines.push_back(text("(no messages)") | dim);
+            }
+            console_panel = vbox({
+                text("Console (press | to close)") | bold,
+                separator(),
+                vbox(console_lines) | vscroll_indicator | frame | size(HEIGHT, LESS_THAN, 15),
+            }) | border;
+        } else {
+            // Mini console preview (last 2 lines)
+            auto messages = console_buffer.get_last(2);
+            Elements console_lines;
+            for (const auto& msg : messages) {
+                console_lines.push_back(text(msg) | dim);
+            }
+            if (!console_lines.empty()) {
+                console_panel = hbox({
+                    text("Console: ") | dim,
+                    vbox(console_lines),
+                });
+            } else {
+                console_panel = text("Console: (no messages)") | dim;
+            }
+        }
+
+        if (console_expanded) {
+            return vbox({
+                header,
+                help,
+                separator(),
+                console_panel | flex,
+            }) | border;
+        } else {
+            return vbox({
+                header,
+                help,
+                separator(),
+                game_grid | flex,
+                separator(),
+                scroll_indicator,
+                separator(),
+                console_panel,
+            }) | border;
+        }
     });
 
     // Handle keyboard input
@@ -1214,6 +1375,12 @@ int main(int argc, char* argv[]) {
         if (event == Event::Character('q') || event == Event::Escape) {
             all_done.store(true);  // Signal refresh thread to exit
             screen.Exit();
+            return true;
+        }
+
+        // Toggle console panel
+        if (event == Event::Character('|')) {
+            console_expanded = !console_expanded;
             return true;
         }
 
@@ -1309,6 +1476,7 @@ int main(int argc, char* argv[]) {
 
     // Spawn worker threads (they will wait for screen_ready)
     log_msg("Main: spawning " + std::to_string(num_threads) + " worker threads");
+    console_msg("Starting " + std::to_string(num_threads) + " worker thread(s)...");
     auto start_time = std::chrono::steady_clock::now();
     std::atomic<bool> screen_ready{false};
     std::vector<std::thread> threads;
