@@ -209,6 +209,7 @@ public:
         if (!to_engine) {
             throw std::runtime_error("Cannot send to closed engine");
         }
+        log_msg("Engine <- " + cmd);
         if (fprintf(to_engine, "%s\n", cmd.c_str()) < 0 ||
             fflush(to_engine) != 0) {
             throw std::runtime_error("Failed to send to engine");
@@ -264,6 +265,11 @@ public:
             if (newline_pos != std::string::npos) {
                 std::string line = read_buffer.substr(0, newline_pos);
                 read_buffer.erase(0, newline_pos + 1);
+                // Log significant responses (not info spam)
+                if (line.find("bestmove") == 0 || line.find("readyok") == 0 ||
+                    line.find("uciok") == 0 || line.find("id ") == 0) {
+                    log_msg("Engine -> " + line);
+                }
                 return line;
             }
         }
@@ -281,7 +287,13 @@ public:
     std::string get_bestmove(const std::string& fen,
                              const std::vector<std::string>& moves, int wtime,
                              int btime, int winc, int binc) {
-        std::string cmd = "position fen " + fen;
+        // Handle "startpos" specially - it's not a valid FEN
+        std::string cmd;
+        if (fen == "startpos") {
+            cmd = "position startpos";
+        } else {
+            cmd = "position fen " + fen;
+        }
         if (!moves.empty()) {
             cmd += " moves";
             for (const auto& m : moves) {
@@ -323,89 +335,89 @@ public:
 // Lichess API Client
 // ============================================================================
 class LichessClient {
-    httplib::SSLClient client;
+    std::string token;
     std::string auth_header;
 
+    // Create a fresh client for each API call to avoid stale connections
+    std::unique_ptr<httplib::SSLClient> make_client(int timeout_sec = 30) {
+        auto cli = std::make_unique<httplib::SSLClient>("lichess.org", 443);
+        cli->set_read_timeout(timeout_sec);
+        cli->set_connection_timeout(timeout_sec);
+        return cli;
+    }
+
 public:
-    LichessClient(const std::string& token)
-        : client("lichess.org", 443), auth_header("Bearer " + token) {
-        client.set_read_timeout(0);  // No timeout for streaming
-        client.set_connection_timeout(30);
-    }
-
-    // Stream incoming events (challenges, game starts)
-    std::unique_ptr<httplib::Result> stream_events() {
-        httplib::Headers headers = {{"Authorization", auth_header},
-                                    {"Accept", "application/x-ndjson"}};
-        auto res = std::make_unique<httplib::Result>(
-            client.Get("/api/stream/event", headers));
-        return res;
-    }
-
-    // Stream game state
-    std::unique_ptr<httplib::Result> stream_game(const std::string& game_id) {
-        httplib::Headers headers = {{"Authorization", auth_header},
-                                    {"Accept", "application/x-ndjson"}};
-        auto res = std::make_unique<httplib::Result>(
-            client.Get("/api/bot/game/stream/" + game_id, headers));
-        return res;
-    }
+    LichessClient(const std::string& tok)
+        : token(tok), auth_header("Bearer " + tok) {}
 
     bool make_move(const std::string& game_id, const std::string& move) {
+        auto cli = make_client();
         httplib::Headers headers = {{"Authorization", auth_header}};
-        auto res =
-            client.Post("/api/bot/game/" + game_id + "/move/" + move, headers);
+        auto res = cli->Post("/api/bot/game/" + game_id + "/move/" + move, headers);
         return res && res->status == 200;
     }
 
     bool accept_challenge(const std::string& challenge_id) {
+        auto cli = make_client();
         httplib::Headers headers = {{"Authorization", auth_header}};
-        auto res =
-            client.Post("/api/challenge/" + challenge_id + "/accept", headers);
-        return res && res->status == 200;
+        auto res = cli->Post("/api/challenge/" + challenge_id + "/accept", headers);
+        if (!res) {
+            log_error("Accept challenge " + challenge_id + ": connection error - " + httplib::to_string(res.error()));
+            return false;
+        }
+        if (res->status != 200) {
+            log_error("Accept challenge " + challenge_id + ": HTTP " + std::to_string(res->status) + " - " + res->body);
+            return false;
+        }
+        return true;
     }
 
     bool decline_challenge(const std::string& challenge_id,
                            const std::string& reason = "generic") {
+        auto cli = make_client();
         httplib::Headers headers = {{"Authorization", auth_header},
                                     {"Content-Type", "application/x-www-form-urlencoded"}};
         std::string body = "reason=" + reason;
-        auto res = client.Post("/api/challenge/" + challenge_id + "/decline",
-                               headers, body, "application/x-www-form-urlencoded");
+        auto res = cli->Post("/api/challenge/" + challenge_id + "/decline",
+                             headers, body, "application/x-www-form-urlencoded");
         return res && res->status == 200;
     }
 
     bool resign_game(const std::string& game_id) {
+        auto cli = make_client();
         httplib::Headers headers = {{"Authorization", auth_header}};
-        auto res = client.Post("/api/bot/game/" + game_id + "/resign", headers);
+        auto res = cli->Post("/api/bot/game/" + game_id + "/resign", headers);
         return res && res->status == 200;
     }
 
     bool abort_game(const std::string& game_id) {
+        auto cli = make_client();
         httplib::Headers headers = {{"Authorization", auth_header}};
-        auto res = client.Post("/api/bot/game/" + game_id + "/abort", headers);
+        auto res = cli->Post("/api/bot/game/" + game_id + "/abort", headers);
         return res && res->status == 200;
     }
 
     // Challenge another user
     bool challenge_user(const std::string& username, int time_secs,
                         int increment_secs, bool rated = true) {
+        auto cli = make_client();
         httplib::Headers headers = {{"Authorization", auth_header},
                                     {"Content-Type", "application/x-www-form-urlencoded"}};
         std::ostringstream body;
         body << "rated=" << (rated ? "true" : "false")
              << "&clock.limit=" << time_secs
              << "&clock.increment=" << increment_secs;
-        auto res = client.Post("/api/challenge/" + username, headers,
-                               body.str(), "application/x-www-form-urlencoded");
+        auto res = cli->Post("/api/challenge/" + username, headers,
+                             body.str(), "application/x-www-form-urlencoded");
         return res && (res->status == 200 || res->status == 201);
     }
 
     // Get list of online bots
     std::vector<std::string> get_online_bots(int limit = 50) {
+        auto cli = make_client();
         httplib::Headers headers = {{"Authorization", auth_header},
                                     {"Accept", "application/x-ndjson"}};
-        auto res = client.Get("/api/bot/online?nb=" + std::to_string(limit), headers);
+        auto res = cli->Get("/api/bot/online?nb=" + std::to_string(limit), headers);
 
         std::vector<std::string> bots;
         if (res && res->status == 200) {
@@ -626,6 +638,9 @@ void game_thread(const std::string& game_id, const LichessConfig& config,
 
                             // Make move if it's our turn
                             if (!state.is_game_over() && state.is_our_turn()) {
+                                log_msg("Game " + game_id + ": Calculating move (wtime=" +
+                                        std::to_string(state.wtime) + ", btime=" +
+                                        std::to_string(state.btime) + ")");
                                 std::string best = engine.get_bestmove(
                                     state.initial_fen, state.moves,
                                     state.wtime, state.btime, state.winc,
@@ -635,6 +650,10 @@ void game_thread(const std::string& game_id, const LichessConfig& config,
                                     log_error("Game " + game_id +
                                               ": Failed to make move " + best);
                                 }
+                            } else {
+                                log_msg("Game " + game_id + ": Waiting for opponent (game_over=" +
+                                        std::string(state.is_game_over() ? "true" : "false") +
+                                        ", our_turn=" + std::string(state.is_our_turn() ? "true" : "false") + ")");
                             }
                         } else if (type == "gameState") {
                             // Game state update
@@ -690,6 +709,8 @@ void game_thread(const std::string& game_id, const LichessConfig& config,
 
     } catch (const std::exception& e) {
         log_error("Game " + game_id + ": Exception: " + e.what());
+    } catch (...) {
+        log_error("Game " + game_id + ": Unknown exception");
     }
 
     log_msg("Game " + game_id + ": Thread exiting");
@@ -886,6 +907,8 @@ public:
 
             } catch (const std::exception& e) {
                 log_error("Stream error: " + std::string(e.what()));
+            } catch (...) {
+                log_error("Stream error: unknown exception");
             }
 
             if (!g_shutdown.load()) {
@@ -925,7 +948,24 @@ public:
         std::string challenger =
             challenge.value("/challenger/name"_json_pointer, "unknown");
 
-        log_msg("Received challenge from " + challenger + " (id: " + id + ")");
+        // Log challenge details
+        std::string time_info = "unknown";
+        if (challenge.contains("timeControl")) {
+            auto& tc = challenge["timeControl"];
+            std::string tc_type = tc.value("type", "unknown");
+            if (tc_type == "clock") {
+                int limit = tc.value("limit", 0);
+                int inc = tc.value("increment", 0);
+                time_info = std::to_string(limit) + "+" + std::to_string(inc) + "s";
+            } else {
+                time_info = tc_type;
+            }
+        }
+        std::string variant = challenge.value("/variant/key"_json_pointer, "standard");
+        bool rated = challenge.value("rated", false);
+
+        log_msg("Received challenge from " + challenger + " (id: " + id + "): " +
+                time_info + ", " + variant + ", " + (rated ? "rated" : "casual"));
 
         // Check if we can accept more games
         if (game_manager->active_count() >=
@@ -1125,6 +1165,7 @@ int main(int argc, char* argv[]) {
     // Set up signal handlers
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGPIPE, SIG_IGN);  // Ignore SIGPIPE to handle broken pipes gracefully
 
     log_msg("CacheMiss Lichess Bot starting...");
     log_msg("Engine: " + config.engine_path);
@@ -1143,7 +1184,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    bot.run();
+    try {
+        bot.run();
+    } catch (const std::exception& e) {
+        log_error("Fatal exception: " + std::string(e.what()));
+    } catch (...) {
+        log_error("Fatal unknown exception");
+    }
 
     log_msg("Bot stopped");
     log_close();
