@@ -97,6 +97,44 @@ static bool test_repetition_resets_on_capture() {
     return result.score > 500;
 }
 
+// Test: PV moves should all be valid
+// Each move in the PV should have a piece on its from square belonging to the side to move
+static bool test_pv_moves_valid() {
+    // KQ vs K - search and validate entire PV
+    Board board("8/8/4k3/8/8/8/1Q6/4K3 w - - 0 1");
+
+    TTable tt(64);
+    auto result = search(board, tt, 300);
+
+    // Walk through the PV and validate each move
+    Board test_board = board;
+    for (int i = 0; i < result.pv_length; ++i) {
+        Move32 move = result.pv[i];
+        int from = move.from();
+
+        // Check there's a piece on the from square
+        Piece piece = test_board.pieces_on_square[from];
+        if (piece == Piece::None) {
+            std::cerr << "  PV move " << i << " (" << move.to_uci()
+                      << "): no piece on from square" << std::endl;
+            return false;
+        }
+
+        // Check the piece belongs to the side to move
+        Bitboard from_bb = square_bb(from);
+        if (!(test_board.occupied[(int)test_board.turn] & from_bb)) {
+            std::cerr << "  PV move " << i << " (" << move.to_uci()
+                      << "): piece doesn't belong to side to move" << std::endl;
+            return false;
+        }
+
+        // Apply the move for the next iteration
+        make_move(test_board, move);
+    }
+
+    return true;
+}
+
 // Test: Search tree repetition
 // Engine should not play into an immediate repetition in the search tree
 static bool test_search_tree_repetition() {
@@ -137,6 +175,9 @@ int run_draw_tests(int time_limit_ms, size_t mem_mb) {
     run("50_move_rule_draw", test_50_move_rule_draw);
     run("repetition_resets_on_capture", test_repetition_resets_on_capture);
     run("search_tree_repetition", test_search_tree_repetition);
+
+    std::cout << "=== PV Validation Tests ===" << std::endl;
+    run("pv_moves_valid", test_pv_moves_valid);
 
     std::cout << "=== " << (failures == 0 ? "All tests passed!" : "Some tests FAILED")
               << " ===" << std::endl;
