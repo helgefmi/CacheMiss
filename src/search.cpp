@@ -219,6 +219,21 @@ static bool in_check(const Board& board) {
     return is_attacked(board.king_sq[(int)us], them, board);
 }
 
+// Check if current position is a repetition of an earlier position
+// Only checks positions with same side to move (every 2nd ply)
+// Bounded by halfmove_clock since captures/pawn moves reset repetition possibility
+static bool is_repetition(const Board& board) {
+    int limit = board.halfmove_clock;
+    for (int i = 2; i <= limit; i += 2) {
+        int idx = board.hash_sp - i;
+        if (idx < 0) break;
+        if (board.hash_stack[idx] == board.hash) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Forward declarations
 static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int ply, bool is_pv_node);
 
@@ -306,6 +321,18 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
 
     ctx.nodes_searched++;
     ctx.init_pv(ply);
+
+    // Draw detection (before TT probe - TT doesn't track repetition history)
+    if (ply > 0) {
+        // 50-move rule
+        if (ctx.board.halfmove_clock >= 100) {
+            return 0;
+        }
+        // Repetition
+        if (is_repetition(ctx.board)) {
+            return 0;
+        }
+    }
 
     // TT probe
     int tt_score;

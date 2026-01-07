@@ -65,6 +65,7 @@ add_executable(cachemiss
     src/uci.cpp
     src/search.cpp
     src/bench.cpp
+    src/tests.cpp
 )
 target_link_libraries(cachemiss cachemiss_core)
 
