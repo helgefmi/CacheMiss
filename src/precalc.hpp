@@ -125,3 +125,43 @@ constexpr std::array<Bitboard, 64> KING_MOVES = []{
     }
     return moves;
 }();
+
+// Adjacent files for each file (0-7)
+constexpr std::array<Bitboard, 8> ADJACENT_FILES = []{
+    std::array<Bitboard, 8> adj = {};
+    constexpr Bitboard FILE_A = 0x0101010101010101ULL;
+    for (int f = 0; f < 8; ++f) {
+        Bitboard file_mask = FILE_A << f;
+        if (f > 0) adj[f] |= file_mask >> 1;
+        if (f < 7) adj[f] |= file_mask << 1;
+    }
+    return adj;
+}();
+
+// PASSED_PAWN_MASK[color][square] - squares where enemy pawns would block a passed pawn
+constexpr std::array<std::array<Bitboard, 64>, 2> PASSED_PAWN_MASK = []{
+    std::array<std::array<Bitboard, 64>, 2> masks = {};
+    constexpr Bitboard FILE_A = 0x0101010101010101ULL;
+
+    for (int sq = 0; sq < 64; ++sq) {
+        int rank = sq / 8;
+        int file = sq % 8;
+        Bitboard file_mask = FILE_A << file;
+        Bitboard adjacent = (file > 0 ? file_mask >> 1 : 0) |
+                           (file < 7 ? file_mask << 1 : 0);
+        Bitboard front_files = file_mask | adjacent;
+
+        // White: all ranks above
+        Bitboard white_mask = 0;
+        for (int r = rank + 1; r < 8; ++r)
+            white_mask |= (front_files & (0xFFULL << (r * 8)));
+        masks[0][sq] = white_mask;
+
+        // Black: all ranks below
+        Bitboard black_mask = 0;
+        for (int r = rank - 1; r >= 0; --r)
+            black_mask |= (front_files & (0xFFULL << (r * 8)));
+        masks[1][sq] = black_mask;
+    }
+    return masks;
+}();
