@@ -126,6 +126,16 @@ constexpr std::array<Bitboard, 64> KING_MOVES = []{
     return moves;
 }();
 
+// File masks (0-7 = a-h)
+constexpr std::array<Bitboard, 8> FILE_MASKS = []{
+    std::array<Bitboard, 8> files = {};
+    constexpr Bitboard FILE_A = 0x0101010101010101ULL;
+    for (int f = 0; f < 8; ++f) {
+        files[f] = FILE_A << f;
+    }
+    return files;
+}();
+
 // Adjacent files for each file (0-7)
 constexpr std::array<Bitboard, 8> ADJACENT_FILES = []{
     std::array<Bitboard, 8> adj = {};
