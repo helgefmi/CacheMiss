@@ -235,7 +235,7 @@ static bool is_repetition(const Board& board) {
 }
 
 // Forward declarations
-static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int ply, bool is_pv_node);
+static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int ply, bool is_pv_node, bool can_null = true);
 
 static int quiescence(SearchContext& ctx, int alpha, int beta, int ply) {
     if (ctx.check_time()) return 0;
@@ -316,7 +316,7 @@ static int quiescence(SearchContext& ctx, int alpha, int beta, int ply) {
     return alpha;
 }
 
-static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int ply, bool is_pv_node) {
+static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int ply, bool is_pv_node, bool can_null) {
     if (ctx.check_time()) return 0;
 
     ctx.nodes_searched++;
@@ -344,6 +344,40 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
 
     if (depth == 0) {
         return quiescence(ctx, alpha, beta, ply);
+    }
+
+    // Compute in_check once for NMP and checkmate detection
+    bool in_chk = in_check(ctx.board);
+
+    // Null Move Pruning
+    // Skip if: in check, PV node, low depth, or just did NMP (can_null=false)
+    if (can_null && !is_pv_node && !in_chk && depth >= 3 && ply >= 1) {
+        // Avoid zugzwang: ensure we have non-pawn material
+        Color us = ctx.board.turn;
+        Bitboard our_pieces = ctx.board.occupied[(int)us];
+        Bitboard our_pawns = ctx.board.pieces[(int)us][(int)Piece::Pawn];
+        Bitboard our_king = ctx.board.pieces[(int)us][(int)Piece::King];
+        bool has_pieces = (our_pieces ^ our_pawns ^ our_king) != 0;
+
+        if (has_pieces) {
+            // Conservative reduction: R = 2 at low depths, R = 3 at high depths
+            int R = depth >= 6 ? 3 : 2;
+            int prev_ep;
+
+            make_null_move(ctx.board, prev_ep);
+            // Pass can_null=false to prevent consecutive null moves
+            int null_score = -alpha_beta(ctx, depth - 1 - R, -beta, -beta + 1, ply + 1, false, false);
+            unmake_null_move(ctx.board, prev_ep);
+
+            if (ctx.stop_search) return 0;
+
+            // Don't trust NMP if score is mate-related (could miss forced mates)
+            // Also don't trust if score is near draw (within ~50cp of 0)
+            if (null_score >= beta && null_score < MATE_SCORE - MAX_PLY &&
+                (null_score > 50 || null_score < -50)) {
+                return beta;  // Null move cutoff
+            }
+        }
     }
 
     int best_score = -INFINITY_SCORE;
@@ -397,7 +431,7 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     }
 
     if (legal_moves == 0) {
-        return in_check(ctx.board) ? (-MATE_SCORE + ply) : 0;
+        return in_chk ? (-MATE_SCORE + ply) : 0;
     }
 
     TTFlag flag = found_pv ? TT_EXACT : TT_UPPER;

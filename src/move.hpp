@@ -94,6 +94,11 @@ MoveList generate_moves(const Board& board);
 void make_move(Board& board, Move32& move);
 void unmake_move(Board& board, const Move32& move);
 
+// Null move - just flip the side to move (and clear ep)
+// Used for null move pruning in search
+void make_null_move(Board& b, int& prev_ep_file);
+void unmake_null_move(Board& b, int prev_ep_file);
+
 bool is_attacked(int square, Color attacker, const Board& board);
 
 // Check if the side that just moved left their king in check (illegal move)

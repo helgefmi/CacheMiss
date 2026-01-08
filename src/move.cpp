@@ -489,6 +489,39 @@ void unmake_move(Board& board, const Move32& move) {
     board.halfmove_clock = board.halfmove_stack[board.hash_sp];
 }
 
+void make_null_move(Board& b, int& prev_ep_file) {
+    // Save en passant file for unmake
+    prev_ep_file = b.ep_file;
+
+    // Update hash
+    b.hash ^= zobrist::side_to_move;
+    if (b.ep_file != 8) {
+        b.hash ^= zobrist::ep_file[b.ep_file];
+        b.ep_file = 8;
+    }
+
+    // Flip turn
+    b.turn = opposite(b.turn);
+
+    // Push hash to stack (for repetition detection)
+    b.hash_stack[b.hash_sp++] = b.hash;
+}
+
+void unmake_null_move(Board& b, int prev_ep_file) {
+    // Pop hash stack
+    --b.hash_sp;
+
+    // Restore hash
+    b.hash ^= zobrist::side_to_move;
+    if (prev_ep_file != 8) {
+        b.hash ^= zobrist::ep_file[prev_ep_file];
+    }
+
+    // Restore en passant and turn
+    b.ep_file = prev_ep_file;
+    b.turn = opposite(b.turn);
+}
+
 bool is_attacked(int square, Color attacker, const Board& board) {
     if (attacker == Color::White) {
         return is_attacked<Color::White>(square, board);
