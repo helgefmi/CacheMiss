@@ -1,11 +1,39 @@
 #include "search.hpp"
 #include "eval.hpp"
 #include <chrono>
+#include <cmath>
 #include <iostream>
 
 // Constants
 constexpr int INFINITY_SCORE = 30000;
 constexpr int MATE_SCORE = 29000;
+
+// LMR (Late Move Reduction) table
+// Indexed by [depth][move_count], values are reduction amounts
+constexpr int LMR_MAX_DEPTH = 64;
+constexpr int LMR_MAX_MOVES = 64;
+static int LMR_TABLE[LMR_MAX_DEPTH][LMR_MAX_MOVES];
+
+// Initialize LMR table with log-based formula
+// Called once at startup
+static bool init_lmr_table() {
+    for (int depth = 0; depth < LMR_MAX_DEPTH; ++depth) {
+        for (int moves = 0; moves < LMR_MAX_MOVES; ++moves) {
+            if (depth == 0 || moves == 0) {
+                LMR_TABLE[depth][moves] = 0;
+            } else {
+                // Standard log formula used by many engines
+                // R = 0.5 + ln(depth) * ln(moves) / 2.25
+                double reduction = 0.5 + std::log(depth) * std::log(moves) / 2.25;
+                LMR_TABLE[depth][moves] = static_cast<int>(reduction);
+            }
+        }
+    }
+    return true;
+}
+
+// Static initialization
+static bool lmr_initialized = init_lmr_table();
 
 // Piece values for MVV-LVA move ordering
 constexpr int MVV_LVA_VALUES[] = {
@@ -382,7 +410,7 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
 
     int best_score = -INFINITY_SCORE;
     Move32 best_move(0);
-    int legal_moves = 0;
+    int moves_searched = 0;
     bool found_pv = false;
 
     MovePicker picker(ctx, ply, tt_move);
@@ -394,16 +422,62 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
             continue;
         }
 
-        legal_moves++;
+        moves_searched++;
 
-        // PVS search
+        // Determine if this move is a candidate for LMR
+        bool is_quiet = !move.is_capture() && !move.is_promotion();
+        bool is_killer = ctx.killers[ply][0].same_move(move) || ctx.killers[ply][1].same_move(move);
+        bool gives_check = in_check(ctx.board);  // opponent is now in check
+
+        // LMR conditions:
+        // - Not first few moves (need some moves searched first)
+        // - Sufficient depth
+        // - Quiet move (not capture or promotion)
+        // - Not a killer move
+        // - Not when we're in check (in_chk)
+        // - Not when move gives check
+        bool can_reduce = moves_searched >= 4
+                       && depth >= 3
+                       && is_quiet
+                       && !is_killer
+                       && !in_chk
+                       && !gives_check;
+
         int score;
-        if (found_pv) {
+
+        if (can_reduce) {
+            // Calculate reduction from LMR table
+            int R = LMR_TABLE[std::min(depth, LMR_MAX_DEPTH - 1)]
+                            [std::min(moves_searched, LMR_MAX_MOVES - 1)];
+
+            // Reduce less in PV nodes
+            if (is_pv_node && R > 0) {
+                R -= 1;
+            }
+
+            // Ensure we don't reduce below 1
+            int reduced_depth = std::max(1, depth - 1 - R);
+
+            // Search with reduced depth
+            score = -alpha_beta(ctx, reduced_depth, -alpha - 1, -alpha, ply + 1, false);
+
+            // Re-search at full depth if it beats alpha
+            if (score > alpha && R > 0 && !ctx.stop_search) {
+                score = -alpha_beta(ctx, depth - 1, -alpha - 1, -alpha, ply + 1, false);
+            }
+
+            // Full PV re-search if still beats alpha in PV node
+            if (score > alpha && score < beta && is_pv_node && !ctx.stop_search) {
+                score = -alpha_beta(ctx, depth - 1, -beta, -alpha, ply + 1, true);
+            }
+        } else if (found_pv) {
+            // Standard PVS for non-reduced moves after PV is found
             score = -alpha_beta(ctx, depth - 1, -alpha - 1, -alpha, ply + 1, false);
             if (score > alpha && score < beta && !ctx.stop_search) {
                 score = -alpha_beta(ctx, depth - 1, -beta, -alpha, ply + 1, true);
             }
         } else {
+            // Full search for first moves
             score = -alpha_beta(ctx, depth - 1, -beta, -alpha, ply + 1, is_pv_node);
         }
 
@@ -430,7 +504,7 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
         }
     }
 
-    if (legal_moves == 0) {
+    if (moves_searched == 0) {
         return in_chk ? (-MATE_SCORE + ply) : 0;
     }
 
