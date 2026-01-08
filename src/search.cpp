@@ -7,6 +7,7 @@
 // Constants
 constexpr int INFINITY_SCORE = 30000;
 constexpr int MATE_SCORE = 29000;
+constexpr int ASPIRATION_WINDOW = 50;  // Initial aspiration window size (centipawns)
 
 // LMR (Late Move Reduction) table
 // Indexed by [depth][move_count], values are reduction amounts
@@ -374,8 +375,12 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
         return quiescence(ctx, alpha, beta, ply);
     }
 
-    // Compute in_check once for NMP and checkmate detection
+    // Compute in_check once for NMP, checkmate detection, and check extension
     bool in_chk = in_check(ctx.board);
+
+    // Check extension: extend search by 1 ply when in check
+    int extension = in_chk ? 1 : 0;
+    int new_depth = depth - 1 + extension;
 
     // Null Move Pruning
     // Skip if: in check, PV node, low depth, or just did NMP (can_null=false)
@@ -456,29 +461,29 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
             }
 
             // Ensure we don't reduce below 1
-            int reduced_depth = std::max(1, depth - 1 - R);
+            int reduced_depth = std::max(1, new_depth - R);
 
             // Search with reduced depth
             score = -alpha_beta(ctx, reduced_depth, -alpha - 1, -alpha, ply + 1, false);
 
             // Re-search at full depth if it beats alpha
             if (score > alpha && R > 0 && !ctx.stop_search) {
-                score = -alpha_beta(ctx, depth - 1, -alpha - 1, -alpha, ply + 1, false);
+                score = -alpha_beta(ctx, new_depth, -alpha - 1, -alpha, ply + 1, false);
             }
 
             // Full PV re-search if still beats alpha in PV node
             if (score > alpha && score < beta && is_pv_node && !ctx.stop_search) {
-                score = -alpha_beta(ctx, depth - 1, -beta, -alpha, ply + 1, true);
+                score = -alpha_beta(ctx, new_depth, -beta, -alpha, ply + 1, true);
             }
         } else if (found_pv) {
             // Standard PVS for non-reduced moves after PV is found
-            score = -alpha_beta(ctx, depth - 1, -alpha - 1, -alpha, ply + 1, false);
+            score = -alpha_beta(ctx, new_depth, -alpha - 1, -alpha, ply + 1, false);
             if (score > alpha && score < beta && !ctx.stop_search) {
-                score = -alpha_beta(ctx, depth - 1, -beta, -alpha, ply + 1, true);
+                score = -alpha_beta(ctx, new_depth, -beta, -alpha, ply + 1, true);
             }
         } else {
             // Full search for first moves
-            score = -alpha_beta(ctx, depth - 1, -beta, -alpha, ply + 1, is_pv_node);
+            score = -alpha_beta(ctx, new_depth, -beta, -alpha, ply + 1, is_pv_node);
         }
 
         unmake_move(ctx.board, move);
@@ -514,16 +519,14 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     return best_score;
 }
 
-static std::pair<Move32, int> search_root(SearchContext& ctx, int depth) {
+static std::pair<Move32, int> search_root(SearchContext& ctx, int depth, int alpha, int beta) {
     ctx.init_pv(0);
 
     // TT probe for move ordering hint
     int tt_score;
     Move32 tt_move(0);
-    ctx.tt.probe(ctx.board.hash, depth, -INFINITY_SCORE, INFINITY_SCORE, tt_score, tt_move);
+    ctx.tt.probe(ctx.board.hash, depth, alpha, beta, tt_score, tt_move);
 
-    int alpha = -INFINITY_SCORE;
-    int beta = INFINITY_SCORE;
     Move32 best_move(0);
     int best_score = -INFINITY_SCORE;
     bool found_pv = false;
@@ -572,7 +575,8 @@ static std::pair<Move32, int> search_root(SearchContext& ctx, int depth) {
     }
 
     if (!ctx.stop_search && best_move.data != 0) {
-        ctx.tt.store(ctx.board.hash, depth, best_score, TT_EXACT, best_move);
+        TTFlag flag = found_pv ? TT_EXACT : TT_UPPER;
+        ctx.tt.store(ctx.board.hash, depth, best_score, flag, best_move);
     }
 
     return {best_move, best_score};
@@ -588,7 +592,47 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
     result.pv_length = 0;
 
     for (int depth = 1; depth <= MAX_PLY; ++depth) {
-        auto [move, score] = search_root(ctx, depth);
+        int alpha, beta, delta;
+
+        // Aspiration windows: use narrow window around previous score after depth 1
+        if (depth == 1) {
+            alpha = -INFINITY_SCORE;
+            beta = INFINITY_SCORE;
+            delta = INFINITY_SCORE;
+        } else {
+            delta = ASPIRATION_WINDOW;
+            alpha = std::max(-INFINITY_SCORE, result.score - delta);
+            beta = std::min(INFINITY_SCORE, result.score + delta);
+        }
+
+        Move32 move;
+        int score;
+
+        // Aspiration window loop: widen on fail-low or fail-high
+        while (true) {
+            auto [m, s] = search_root(ctx, depth, alpha, beta);
+            move = m;
+            score = s;
+
+            if (ctx.stop_search) break;
+
+            // Fail low: widen alpha
+            if (score <= alpha) {
+                alpha = std::max(-INFINITY_SCORE, alpha - delta);
+                delta *= 2;
+                continue;
+            }
+
+            // Fail high: widen beta
+            if (score >= beta) {
+                beta = std::min(INFINITY_SCORE, beta + delta);
+                delta *= 2;
+                continue;
+            }
+
+            // Score within window - done with this depth
+            break;
+        }
 
         if (ctx.stop_search) {
             if (move.data != 0) {
