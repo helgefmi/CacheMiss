@@ -19,6 +19,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build-release"
 OUTPUT_DIR="$PROJECT_DIR/builds"
 OUTPUT_NAME="cachemiss.$SUFFIX"
+OUTPUT_PATH="$OUTPUT_DIR/$OUTPUT_NAME"
 
 echo "Building release: $OUTPUT_NAME"
 
@@ -32,6 +33,7 @@ cmake --build "$BUILD_DIR" --target cachemiss
 mkdir -p "$OUTPUT_DIR"
 
 # Copy binary
-cp "$BUILD_DIR/cachemiss" "$OUTPUT_DIR/$OUTPUT_NAME"
+rm -f "$OUTPUT_PATH"
+cp "$BUILD_DIR/cachemiss" "$OUTPUT_PATH"
 
-echo "Built: $OUTPUT_DIR/$OUTPUT_NAME"
+echo "Built: $OUTPUT_PATH"
