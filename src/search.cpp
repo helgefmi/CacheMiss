@@ -4,6 +4,9 @@
 #include <cmath>
 #include <iostream>
 
+// Global stop flag - can be set by UCI thread to interrupt search
+std::atomic<bool> global_stop_flag{false};
+
 // Constants
 constexpr int INFINITY_SCORE = 30000;
 constexpr int MATE_SCORE = 29000;
@@ -82,6 +85,11 @@ struct SearchContext {
           time_limit_ms(time_ms) {}
 
     bool check_time() {
+        // Check global stop flag (set by UCI thread)
+        if (global_stop_flag.load(std::memory_order_relaxed)) {
+            stop_search = true;
+            return true;
+        }
         if ((nodes_searched & 2047) == 0) {
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();

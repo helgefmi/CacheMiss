@@ -3,6 +3,10 @@
 #include "board.hpp"
 #include "move.hpp"
 #include "ttable.hpp"
+#include <atomic>
+
+// Global stop flag - set by UCI to interrupt search
+extern std::atomic<bool> global_stop_flag;
 
 constexpr int MAX_PLY = 64;
 
