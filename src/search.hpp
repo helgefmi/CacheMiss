@@ -8,6 +8,10 @@
 // Global stop flag - set by UCI to interrupt search
 extern std::atomic<bool> global_stop_flag;
 
+// Global time limit - can be updated by UCI on ponderhit
+// Set to 0 to use the time_limit_ms passed to search()
+extern std::atomic<int> global_search_time_limit_ms;
+
 constexpr int MAX_PLY = 64;
 
 struct SearchResult {

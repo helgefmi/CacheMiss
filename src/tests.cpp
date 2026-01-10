@@ -6,9 +6,12 @@
 #include "zobrist.hpp"
 #include "eval.hpp"
 #include "perft.hpp"
+#include "uci.hpp"
 #include <iostream>
 #include <cmath>
 #include <sstream>
+#include <chrono>
+#include <thread>
 
 // Helper to apply UCI move
 static void apply_move(Board& board, const std::string& uci) {
@@ -848,6 +851,259 @@ static bool test_repetition_resets_on_capture() {
     return check_board_invariants(board, error);
 }
 
+// =============================================================================
+// UCI PARSING TESTS
+// =============================================================================
+
+// Test: parse_position_command with startpos
+static bool test_uci_position_startpos() {
+    Board board("8/8/8/8/8/8/8/8 w - - 0 1");  // Empty board
+    parse_position_command("position startpos", board);
+
+    // Should be starting position
+    Board expected;
+    return board.hash == expected.hash;
+}
+
+// Test: parse_position_command with startpos and moves
+static bool test_uci_position_startpos_moves() {
+    Board board;
+    parse_position_command("position startpos moves e2e4 e7e5 g1f3", board);
+
+    // Verify board state after e4 e5 Nf3
+    Board expected;
+    apply_move(expected, "e2e4");
+    apply_move(expected, "e7e5");
+    apply_move(expected, "g1f3");
+
+    return board.hash == expected.hash;
+}
+
+// Test: parse_position_command with FEN
+static bool test_uci_position_fen() {
+    Board board;
+    parse_position_command("position fen r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1", board);
+
+    Board expected("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1");
+    return board.hash == expected.hash;
+}
+
+// Test: parse_position_command with FEN and moves
+static bool test_uci_position_fen_moves() {
+    Board board;
+    parse_position_command("position fen r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1 moves e1g1", board);
+
+    Board expected("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1");
+    apply_move(expected, "e1g1");
+
+    return board.hash == expected.hash;
+}
+
+// Test: parse_go_command with movetime
+static bool test_uci_go_movetime() {
+    Board board;
+    GoParams params = parse_go_command("go movetime 5000", board, 0, 100);
+
+    return params.time_ms == 5000 && params.normal_time_ms == 5000 && !params.is_ponder;
+}
+
+// Test: parse_go_command with infinite
+static bool test_uci_go_infinite() {
+    Board board;
+    GoParams params = parse_go_command("go infinite", board, 0, 100);
+
+    // Infinite should return very large time
+    return params.time_ms > 100000000 && !params.is_ponder;
+}
+
+// Test: parse_go_command with ponder (should have infinite time but is_ponder=true)
+static bool test_uci_go_ponder() {
+    Board board;
+    GoParams params = parse_go_command("go ponder wtime 60000 btime 60000", board, 0, 100);
+
+    // Ponder mode: time_ms should be very large (infinite), but normal_time_ms should be calculated
+    if (params.time_ms <= 100000000) return false;  // Should be infinite-ish
+    if (!params.is_ponder) return false;
+    if (params.normal_time_ms <= 0) return false;  // Should have calculated time
+    if (params.normal_time_ms > 60000) return false;  // Should be reasonable
+
+    return true;
+}
+
+// Test: parse_go_command time calculation (white's turn, opening)
+static bool test_uci_go_time_white_opening() {
+    Board board;  // White to move
+    // wtime=60000, btime=60000, moves_played=0 (opening), move_overhead=100
+    GoParams params = parse_go_command("go wtime 60000 btime 60000", board, 0, 100);
+
+    // In opening (moves_played < 10), expect ~50 moves remaining
+    // Time = (60000 - 100) / 50 = ~1198 ms
+    // Safety bounds: min 10ms, max time/4 = 15000
+    if (params.time_ms < 500 || params.time_ms > 5000) {
+        std::cerr << "  Expected ~1200ms, got " << params.time_ms << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// Test: parse_go_command time calculation (black's turn)
+static bool test_uci_go_time_black() {
+    Board board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");  // Black to move
+    GoParams params = parse_go_command("go wtime 60000 btime 30000", board, 1, 100);
+
+    // Black has 30000ms, should use black's time
+    // Time should be based on btime, not wtime
+    if (params.time_ms < 200 || params.time_ms > 3000) {
+        std::cerr << "  Expected time based on btime (30000), got " << params.time_ms << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// Test: parse_go_command with increment
+static bool test_uci_go_time_with_increment() {
+    Board board;
+    // wtime=60000, winc=2000
+    GoParams params = parse_go_command("go wtime 60000 btime 60000 winc 2000 binc 2000", board, 0, 100);
+
+    // Time = base_time/moves_remaining + inc * 3/4
+    // inc * 3/4 = 2000 * 0.75 = 1500
+    // So should be ~1198 + 1500 = ~2698
+    if (params.time_ms < 1500 || params.time_ms > 5000) {
+        std::cerr << "  Expected ~2700ms with increment, got " << params.time_ms << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// Test: parse_go_command with movestogo
+static bool test_uci_go_time_movestogo() {
+    Board board;
+    // wtime=60000, movestogo=10 (10 moves to time control)
+    GoParams params = parse_go_command("go wtime 60000 btime 60000 movestogo 10", board, 20, 100);
+
+    // With movestogo=10, time = (60000 - 100) / 10 = ~5990
+    if (params.time_ms < 4000 || params.time_ms > 7000) {
+        std::cerr << "  Expected ~6000ms with movestogo=10, got " << params.time_ms << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// Test: Time management respects move overhead
+static bool test_uci_go_move_overhead() {
+    Board board;
+    // Large move overhead should reduce available time
+    GoParams params1 = parse_go_command("go wtime 10000 btime 10000", board, 0, 100);
+    GoParams params2 = parse_go_command("go wtime 10000 btime 10000", board, 0, 2000);
+
+    // With higher overhead, time allocation should be smaller
+    if (params2.time_ms >= params1.time_ms) {
+        std::cerr << "  Higher overhead should give less time" << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// Test: Ponderhit sets global time limit
+static bool test_uci_ponderhit_sets_time() {
+    // This tests that the global_search_time_limit_ms can be used
+    // Reset it first
+    global_search_time_limit_ms.store(0, std::memory_order_relaxed);
+
+    // Simulate what UCI does on ponderhit
+    int ponder_time_ms = 3500;
+    global_search_time_limit_ms.store(ponder_time_ms, std::memory_order_relaxed);
+
+    // Verify it was set
+    int retrieved = global_search_time_limit_ms.load(std::memory_order_relaxed);
+    if (retrieved != 3500) {
+        std::cerr << "  global_search_time_limit_ms not set correctly" << std::endl;
+        return false;
+    }
+
+    // Reset
+    global_search_time_limit_ms.store(0, std::memory_order_relaxed);
+    return true;
+}
+
+// Test: Search respects global time limit after ponderhit
+static bool test_search_respects_ponderhit_time() {
+    Board board;
+    TTable tt(16);
+
+    // Set a short global time limit (simulating ponderhit)
+    global_search_time_limit_ms.store(100, std::memory_order_relaxed);
+    global_stop_flag.store(false, std::memory_order_relaxed);
+
+    auto start = std::chrono::steady_clock::now();
+    search(board, tt, 999999999);  // Pass infinite time, but global should limit
+    auto end = std::chrono::steady_clock::now();
+
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+    // Reset global
+    global_search_time_limit_ms.store(0, std::memory_order_relaxed);
+
+    // Search should have stopped within ~200ms (100ms limit + some overhead)
+    if (elapsed_ms > 500) {
+        std::cerr << "  Search took " << elapsed_ms << "ms, expected ~100ms" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// Test: Ponder params store normal_time for ponderhit
+static bool test_uci_ponder_stores_normal_time() {
+    Board board;
+    // go ponder with time controls
+    GoParams params = parse_go_command("go ponder wtime 180000 btime 150000", board, 5, 100);
+
+    // Should be pondering
+    if (!params.is_ponder) return false;
+
+    // time_ms should be infinite for ponder
+    if (params.time_ms <= 1000000) return false;
+
+    // normal_time_ms should be a reasonable calculated time (for use on ponderhit)
+    // With wtime=180000, moves_played=5 (still opening, ~50 moves remaining)
+    // base = (180000 - 100) / 50 = ~3598
+    if (params.normal_time_ms < 1000 || params.normal_time_ms > 10000) {
+        std::cerr << "  Expected normal_time_ms ~3600, got " << params.normal_time_ms << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// Test: Time safety bounds - minimum time
+static bool test_uci_time_min_bound() {
+    Board board;
+    // Very low time should still give at least 10ms
+    GoParams params = parse_go_command("go wtime 50 btime 50", board, 0, 0);
+
+    if (params.time_ms < 10) {
+        std::cerr << "  Time below minimum bound" << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// Test: Time safety bounds - maximum (time/4)
+static bool test_uci_time_max_bound() {
+    Board board;
+    // With movestogo=1, naive calc would use all time, but should be capped at time/4
+    GoParams params = parse_go_command("go wtime 40000 btime 40000 movestogo 1", board, 0, 100);
+
+    // Max should be (40000 - 100) / 4 = 9975
+    if (params.time_ms > 10000) {
+        std::cerr << "  Time exceeded max bound (time/4), got " << params.time_ms << std::endl;
+        return false;
+    }
+    return true;
+}
+
 // Test: PV moves should all be valid
 // Each move in the PV should have a piece on its from square belonging to the side to move
 static bool test_pv_moves_valid() {
@@ -1000,6 +1256,27 @@ int run_draw_tests(int time_limit_ms, size_t mem_mb) {
 
     std::cout << "=== PV Validation Tests ===" << std::endl;
     run("pv_moves_valid", test_pv_moves_valid);
+
+    std::cout << "=== UCI Parsing Tests ===" << std::endl;
+    run("uci_position_startpos", test_uci_position_startpos);
+    run("uci_position_startpos_moves", test_uci_position_startpos_moves);
+    run("uci_position_fen", test_uci_position_fen);
+    run("uci_position_fen_moves", test_uci_position_fen_moves);
+    run("uci_go_movetime", test_uci_go_movetime);
+    run("uci_go_infinite", test_uci_go_infinite);
+    run("uci_go_ponder", test_uci_go_ponder);
+    run("uci_go_time_white_opening", test_uci_go_time_white_opening);
+    run("uci_go_time_black", test_uci_go_time_black);
+    run("uci_go_time_with_increment", test_uci_go_time_with_increment);
+    run("uci_go_time_movestogo", test_uci_go_time_movestogo);
+    run("uci_go_move_overhead", test_uci_go_move_overhead);
+    run("uci_time_min_bound", test_uci_time_min_bound);
+    run("uci_time_max_bound", test_uci_time_max_bound);
+    run("uci_ponder_stores_normal_time", test_uci_ponder_stores_normal_time);
+
+    std::cout << "=== UCI Ponderhit Tests ===" << std::endl;
+    run("uci_ponderhit_sets_time", test_uci_ponderhit_sets_time);
+    run("search_respects_ponderhit_time", test_search_respects_ponderhit_time);
 
     std::cout << "=== " << (failures == 0 ? "All tests passed!" : "Some tests FAILED")
               << " ===" << std::endl;

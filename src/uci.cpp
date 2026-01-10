@@ -11,6 +11,14 @@
 
 #include <sys/select.h>
 #include <unistd.h>
+#include <algorithm>
+#include <cctype>
+
+// Trim trailing whitespace and carriage returns (handles CRLF line endings)
+static std::string trim_right(const std::string& s) {
+    auto end = s.find_last_not_of(" \t\r\n");
+    return (end == std::string::npos) ? "" : s.substr(0, end + 1);
+}
 
 static const char* ENGINE_NAME = "CacheMiss";
 static const char* ENGINE_AUTHOR = "Helge";
@@ -44,7 +52,7 @@ static bool input_available() {
 // Parse "position" command
 // position startpos [moves e2e4 e7e5 ...]
 // position fen <fen> [moves e2e4 e7e5 ...]
-static void parse_position(const std::string& line, Board& board) {
+void parse_position_command(const std::string& line, Board& board) {
     std::istringstream iss(line);
     std::string token;
     iss >> token;  // "position"
@@ -80,19 +88,13 @@ static void parse_position(const std::string& line, Board& board) {
     }
 }
 
-// Parse "go" command result
-struct GoParams {
-    int time_ms;
-    bool is_ponder;
-};
-
 // Parse "go" command and return time in ms and ponder flag
 // go movetime <ms>
 // go wtime <ms> btime <ms> [winc <ms>] [binc <ms>] [movestogo <n>]
 // go depth <d>
 // go infinite
 // go ponder
-static GoParams parse_go(const std::string& line, const Board& board) {
+GoParams parse_go_command(const std::string& line, const Board& board, int moves_played, int move_overhead_ms) {
     std::istringstream iss(line);
     std::string token;
     iss >> token;  // "go"
@@ -127,42 +129,47 @@ static GoParams parse_go(const std::string& line, const Board& board) {
         }
     }
 
-    // Calculate time to use
+    // Calculate time we'd use for a normal search (even if pondering)
+    int normal_time = 1000;  // Default: 1 second
+
     if (movetime > 0) {
-        return {movetime, is_ponder};
-    }
+        normal_time = movetime;
+    } else {
+        int our_time = (board.turn == Color::White) ? wtime : btime;
+        int our_inc = (board.turn == Color::White) ? winc : binc;
 
-    if (infinite || is_ponder) {
-        return {999999999, is_ponder};  // Very long time for infinite/ponder
-    }
+        // Subtract move overhead to account for network/GUI latency
+        our_time = std::max(0, our_time - move_overhead_ms);
 
-    int our_time = (board.turn == Color::White) ? wtime : btime;
-    int our_inc = (board.turn == Color::White) ? winc : binc;
+        if (our_time > 0) {
+            // Determine moves remaining
+            int moves_remaining;
+            if (movestogo > 0) {
+                moves_remaining = movestogo;  // Trust the GUI
+            } else {
+                moves_remaining = estimate_moves_remaining(moves_played);
+            }
 
-    // Subtract move overhead to account for network/GUI latency
-    our_time = std::max(0, our_time - move_overhead_ms);
+            // Time = base allocation + most of increment
+            int time_for_move = our_time / moves_remaining + our_inc * 3 / 4;
 
-    if (our_time > 0) {
-        // Determine moves remaining
-        int moves_remaining;
-        if (movestogo > 0) {
-            moves_remaining = movestogo;  // Trust the GUI
-        } else {
-            moves_remaining = estimate_moves_remaining(moves_played);
+            // Safety bounds
+            if (time_for_move < 10) time_for_move = 10;
+            if (time_for_move > our_time / 4) time_for_move = our_time / 4;
+
+            normal_time = time_for_move;
         }
-
-        // Time = base allocation + most of increment
-        int time_for_move = our_time / moves_remaining + our_inc * 3 / 4;
-
-        // Safety bounds
-        if (time_for_move < 10) time_for_move = 10;
-        if (time_for_move > our_time / 4) time_for_move = our_time / 4;
-
-        return {time_for_move, is_ponder};
     }
 
-    // Default: 1 second
-    return {1000, is_ponder};
+    // For infinite or ponder, use very long time but remember normal_time for ponderhit
+    if (infinite) {
+        return {999999999, 999999999, false};
+    }
+    if (is_ponder) {
+        return {999999999, normal_time, true};  // Long time for ponder, but save normal time
+    }
+
+    return {normal_time, normal_time, false};
 }
 
 // Parse "setoption name <name> value <value>"
@@ -223,9 +230,11 @@ void uci_loop(size_t hash_mb) {
     Board board;
     TTable tt(hash_mb);
     bool is_pondering = false;
+    int ponder_time_ms = 0;  // Time to use when ponderhit is received
 
     std::string line;
     while (std::getline(std::cin, line)) {
+        line = trim_right(line);
         if (line.empty()) continue;
 
         std::istringstream iss(line);
@@ -256,14 +265,16 @@ void uci_loop(size_t hash_mb) {
             }
         }
         else if (cmd == "position") {
-            parse_position(line, board);
+            parse_position_command(line, board);
         }
         else if (cmd == "go") {
-            GoParams params = parse_go(line, board);
+            GoParams params = parse_go_command(line, board, moves_played, move_overhead_ms);
             is_pondering = params.is_ponder;
+            ponder_time_ms = params.normal_time_ms;  // Save for ponderhit
 
-            // Reset stop flag and start search in a thread
+            // Reset flags for new search
             global_stop_flag.store(false, std::memory_order_relaxed);
+            global_search_time_limit_ms.store(0, std::memory_order_relaxed);  // Use search's time_ms
             search_running.store(true, std::memory_order_relaxed);
 
             std::thread search_thread([&board, &tt, time_ms = params.time_ms]() {
@@ -276,17 +287,22 @@ void uci_loop(size_t hash_mb) {
                 if (input_available()) {
                     std::string input_cmd;
                     if (!std::getline(std::cin, input_cmd)) break;
+                    input_cmd = trim_right(input_cmd);
 
                     if (input_cmd == "stop") {
+                        std::cerr << "info string received: stop" << std::endl;
                         global_stop_flag.store(true, std::memory_order_relaxed);
                         is_pondering = false;
                     }
                     else if (input_cmd == "ponderhit") {
-                        // Opponent played our predicted move, continue searching normally
+                        // Opponent played our predicted move, switch to real time control
+                        std::cerr << "info string received: ponderhit (limit=" << ponder_time_ms << "ms)" << std::endl;
                         is_pondering = false;
-                        // Search continues with remaining time
+                        // Set the global time limit so search stops at the right time
+                        global_search_time_limit_ms.store(ponder_time_ms, std::memory_order_relaxed);
                     }
                     else if (input_cmd == "quit") {
+                        std::cerr << "info string received: quit" << std::endl;
                         global_stop_flag.store(true, std::memory_order_relaxed);
                         search_thread.join();
                         return;  // Exit the UCI loop
@@ -297,11 +313,30 @@ void uci_loop(size_t hash_mb) {
 
             search_thread.join();
 
-            // Only output bestmove if not pondering (ponderhit clears pondering flag)
-            if (!is_pondering) {
-                output_bestmove(last_result);
-                moves_played++;
+            // If still pondering (search finished naturally, e.g., found mate),
+            // wait for stop/ponderhit per UCI protocol before outputting bestmove
+            while (is_pondering) {
+                std::cerr << "info string ponder search finished, waiting for stop/ponderhit" << std::endl;
+                std::string input_cmd;
+                if (!std::getline(std::cin, input_cmd)) break;
+                input_cmd = trim_right(input_cmd);
+
+                if (input_cmd == "stop") {
+                    std::cerr << "info string received: stop (after ponder finished)" << std::endl;
+                    is_pondering = false;
+                }
+                else if (input_cmd == "ponderhit") {
+                    std::cerr << "info string received: ponderhit (after ponder finished)" << std::endl;
+                    is_pondering = false;
+                }
+                else if (input_cmd == "quit") {
+                    return;  // Exit UCI loop
+                }
+                // Ignore other commands while waiting for ponder to end
             }
+
+            output_bestmove(last_result);
+            moves_played++;
         }
         else if (cmd == "stop") {
             // Stop received when not searching - ignore

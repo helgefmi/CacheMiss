@@ -7,6 +7,10 @@
 // Global stop flag - can be set by UCI thread to interrupt search
 std::atomic<bool> global_stop_flag{false};
 
+// Global time limit - can be updated by UCI on ponderhit
+// When > 0, overrides the time_limit_ms passed to search()
+std::atomic<int> global_search_time_limit_ms{0};
+
 // Constants
 constexpr int INFINITY_SCORE = 30000;
 constexpr int MATE_SCORE = 29000;
@@ -93,8 +97,14 @@ struct SearchContext {
         if ((nodes_searched & 2047) == 0) {
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
-            if (elapsed >= time_limit_ms) {
+            // Use global time limit if set (for ponderhit), otherwise use local
+            int effective_limit = global_search_time_limit_ms.load(std::memory_order_relaxed);
+            if (effective_limit <= 0) {
+                effective_limit = time_limit_ms;
+            }
+            if (elapsed >= effective_limit) {
                 stop_search = true;
+                std::cerr << "info string stopping: elapsed=" << elapsed << "ms limit=" << effective_limit << "ms" << std::endl;
             }
         }
         return stop_search;

@@ -7,3 +7,4 @@ data/
 *.log
 lichess-bot/
 config.yml
+lichess_bot_auto_logs/
