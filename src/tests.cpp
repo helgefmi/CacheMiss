@@ -1005,45 +1005,45 @@ static bool test_uci_go_move_overhead() {
     return true;
 }
 
-// Test: Ponderhit sets global time limit
+// Test: Ponderhit sets time limit via SearchController
 static bool test_uci_ponderhit_sets_time() {
-    // This tests that the global_search_time_limit_ms can be used
+    // This tests that the SearchController time limit can be used
     // Reset it first
-    global_search_time_limit_ms.store(0, std::memory_order_relaxed);
+    g_search_controller.reset();
 
     // Simulate what UCI does on ponderhit
     int ponder_time_ms = 3500;
-    global_search_time_limit_ms.store(ponder_time_ms, std::memory_order_relaxed);
+    g_search_controller.set_time_limit(ponder_time_ms);
 
     // Verify it was set
-    int retrieved = global_search_time_limit_ms.load(std::memory_order_relaxed);
+    int retrieved = g_search_controller.get_time_limit_override();
     if (retrieved != 3500) {
-        std::cerr << "  global_search_time_limit_ms not set correctly" << std::endl;
+        std::cerr << "  SearchController time limit not set correctly" << std::endl;
         return false;
     }
 
     // Reset
-    global_search_time_limit_ms.store(0, std::memory_order_relaxed);
+    g_search_controller.reset();
     return true;
 }
 
-// Test: Search respects global time limit after ponderhit
+// Test: Search respects time limit after ponderhit
 static bool test_search_respects_ponderhit_time() {
     Board board;
     TTable tt(16);
 
-    // Set a short global time limit (simulating ponderhit)
-    global_search_time_limit_ms.store(100, std::memory_order_relaxed);
-    global_stop_flag.store(false, std::memory_order_relaxed);
+    // Reset and set a short time limit (simulating ponderhit)
+    g_search_controller.reset();
+    g_search_controller.set_time_limit(100);
 
     auto start = std::chrono::steady_clock::now();
-    search(board, tt, 999999999);  // Pass infinite time, but global should limit
+    search(board, tt, 999999999);  // Pass infinite time, but controller should limit
     auto end = std::chrono::steady_clock::now();
 
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-    // Reset global
-    global_search_time_limit_ms.store(0, std::memory_order_relaxed);
+    // Reset controller
+    g_search_controller.reset();
 
     // Search should have stopped within ~200ms (100ms limit + some overhead)
     if (elapsed_ms > 500) {

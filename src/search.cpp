@@ -4,17 +4,39 @@
 #include <cmath>
 #include <iostream>
 
-// Global stop flag - can be set by UCI thread to interrupt search
-std::atomic<bool> global_stop_flag{false};
+// Global search controller instance
+SearchController g_search_controller;
 
-// Global time limit - can be updated by UCI on ponderhit
-// When > 0, overrides the time_limit_ms passed to search()
-std::atomic<int> global_search_time_limit_ms{0};
+// ============================================================================
+// Search Constants (extracted from magic numbers throughout the code)
+// ============================================================================
 
-// Constants
+// Core search constants
 constexpr int INFINITY_SCORE = 30000;
 constexpr int MATE_SCORE = 29000;
-constexpr int ASPIRATION_WINDOW = 50;  // Initial aspiration window size (centipawns)
+
+// Time management
+constexpr int NODE_CHECK_INTERVAL = 2048;     // Check time every N nodes (must be power of 2)
+constexpr int NODE_CHECK_MASK = NODE_CHECK_INTERVAL - 1;  // Bitmask for fast modulo
+
+// Aspiration window
+constexpr int ASPIRATION_WINDOW = 50;         // Initial aspiration window size (centipawns)
+
+// Null Move Pruning (NMP)
+constexpr int NMP_MIN_DEPTH = 3;              // Minimum depth to apply NMP
+constexpr int NMP_HIGH_DEPTH = 6;             // Depth threshold for higher reduction
+constexpr int NMP_REDUCTION_LOW = 2;          // Reduction at low depths
+constexpr int NMP_REDUCTION_HIGH = 3;         // Reduction at high depths
+constexpr int NMP_DRAW_THRESHOLD = 50;        // Ignore NMP if score is within this of draw
+
+// Late Move Reductions (LMR)
+constexpr int LMR_MIN_MOVES = 4;              // Minimum moves searched before applying LMR
+constexpr int LMR_MIN_DEPTH = 3;              // Minimum depth to apply LMR
+constexpr int LMR_PV_REDUCTION = 1;           // Reduce LMR by this amount in PV nodes
+constexpr int LMR_MIN_REDUCED_DEPTH = 1;      // Never reduce below this depth
+
+// Pawn double push detection
+constexpr int PAWN_DOUBLE_PUSH_DIFF = 16;     // Square difference for double pawn push
 
 // LMR (Late Move Reduction) table
 // Indexed by [depth][move_count], values are reduction amounts
@@ -89,16 +111,16 @@ struct SearchContext {
           time_limit_ms(time_ms) {}
 
     bool check_time() {
-        // Check global stop flag (set by UCI thread)
-        if (global_stop_flag.load(std::memory_order_relaxed)) {
+        // Check global stop flag (set by UCI thread via SearchController)
+        if (g_search_controller.should_stop()) {
             stop_search = true;
             return true;
         }
-        if ((nodes_searched & 2047) == 0) {
+        if ((nodes_searched & NODE_CHECK_MASK) == 0) {
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
-            // Use global time limit if set (for ponderhit), otherwise use local
-            int effective_limit = global_search_time_limit_ms.load(std::memory_order_relaxed);
+            // Use overridden time limit if set (for ponderhit), otherwise use local
+            int effective_limit = g_search_controller.get_time_limit_override();
             if (effective_limit <= 0) {
                 effective_limit = time_limit_ms;
             }
@@ -369,8 +391,11 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     ctx.nodes_searched++;
     ctx.init_pv(ply);
 
+    const bool is_root = (ply == 0);
+
     // Draw detection (before TT probe - TT doesn't track repetition history)
-    if (ply > 0) {
+    // Skip at root since the game can't be drawn before our first move
+    if (!is_root) {
         // 50-move rule
         if (ctx.board.halfmove_clock >= 100) {
             return 0;
@@ -385,7 +410,8 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     int tt_score;
     Move32 tt_move(0);
     bool tt_hit = ctx.tt.probe(ctx.board.hash, depth, alpha, beta, tt_score, tt_move);
-    if (tt_hit && !is_pv_node) {
+    // Don't take TT cutoffs at root (we need to find the actual best move)
+    if (tt_hit && !is_pv_node && !is_root) {
         return tt_score;
     }
 
@@ -396,13 +422,13 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     // Compute in_check once for NMP, checkmate detection, and check extension
     bool in_chk = in_check(ctx.board);
 
-    // Check extension: extend search by 1 ply when in check
-    int extension = in_chk ? 1 : 0;
+    // Check extension: extend search by 1 ply when in check (not at root)
+    int extension = (!is_root && in_chk) ? 1 : 0;
     int new_depth = depth - 1 + extension;
 
     // Null Move Pruning
-    // Skip if: in check, PV node, low depth, or just did NMP (can_null=false)
-    if (can_null && !is_pv_node && !in_chk && depth >= 3 && ply >= 1) {
+    // Skip if: root, in check, PV node, low depth, or just did NMP (can_null=false)
+    if (can_null && !is_root && !is_pv_node && !in_chk && depth >= NMP_MIN_DEPTH) {
         // Avoid zugzwang: ensure we have non-pawn material
         Color us = ctx.board.turn;
         Bitboard our_pieces = ctx.board.occupied[(int)us];
@@ -412,7 +438,7 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
 
         if (has_pieces) {
             // Conservative reduction: R = 2 at low depths, R = 3 at high depths
-            int R = depth >= 6 ? 3 : 2;
+            int R = depth >= NMP_HIGH_DEPTH ? NMP_REDUCTION_HIGH : NMP_REDUCTION_LOW;
             int prev_ep;
 
             make_null_move(ctx.board, prev_ep);
@@ -423,9 +449,9 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
             if (ctx.stop_search) return 0;
 
             // Don't trust NMP if score is mate-related (could miss forced mates)
-            // Also don't trust if score is near draw (within ~50cp of 0)
+            // Also don't trust if score is near draw
             if (null_score >= beta && null_score < MATE_SCORE - MAX_PLY &&
-                (null_score > 50 || null_score < -50)) {
+                (null_score > NMP_DRAW_THRESHOLD || null_score < -NMP_DRAW_THRESHOLD)) {
                 return beta;  // Null move cutoff
             }
         }
@@ -436,7 +462,8 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     int moves_searched = 0;
     bool found_pv = false;
 
-    MovePicker picker(ctx, ply, tt_move);
+    // At root, also consider prev_best_move for move ordering
+    MovePicker picker(ctx, ply, tt_move, is_root ? ctx.prev_best_move : Move32(0));
     while (Move32 move = picker.next()) {
         make_move(ctx.board, move);
 
@@ -453,14 +480,16 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
         bool gives_check = in_check(ctx.board);  // opponent is now in check
 
         // LMR conditions:
+        // - Not at root (we want full search at root for best move accuracy)
         // - Not first few moves (need some moves searched first)
         // - Sufficient depth
         // - Quiet move (not capture or promotion)
         // - Not a killer move
         // - Not when we're in check (in_chk)
         // - Not when move gives check
-        bool can_reduce = moves_searched >= 4
-                       && depth >= 3
+        bool can_reduce = !is_root
+                       && moves_searched >= LMR_MIN_MOVES
+                       && depth >= LMR_MIN_DEPTH
                        && is_quiet
                        && !is_killer
                        && !in_chk
@@ -475,11 +504,11 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
 
             // Reduce less in PV nodes
             if (is_pv_node && R > 0) {
-                R -= 1;
+                R -= LMR_PV_REDUCTION;
             }
 
-            // Ensure we don't reduce below 1
-            int reduced_depth = std::max(1, new_depth - R);
+            // Ensure we don't reduce below minimum
+            int reduced_depth = std::max(LMR_MIN_REDUCED_DEPTH, new_depth - R);
 
             // Search with reduced depth
             score = -alpha_beta(ctx, reduced_depth, -alpha - 1, -alpha, ply + 1, false);
@@ -506,7 +535,15 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
 
         unmake_move(ctx.board, move);
 
-        if (ctx.stop_search) return 0;
+        if (ctx.stop_search) {
+            // At root, use partial result if we have one
+            if (is_root && best_move.data == 0) {
+                best_move = move;
+                best_score = score;
+                ctx.update_pv(0, move);
+            }
+            return is_root ? best_score : 0;
+        }
 
         if (score > best_score) {
             best_score = score;
@@ -537,69 +574,6 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     return best_score;
 }
 
-static std::pair<Move32, int> search_root(SearchContext& ctx, int depth, int alpha, int beta) {
-    ctx.init_pv(0);
-
-    // TT probe for move ordering hint
-    int tt_score;
-    Move32 tt_move(0);
-    ctx.tt.probe(ctx.board.hash, depth, alpha, beta, tt_score, tt_move);
-
-    Move32 best_move(0);
-    int best_score = -INFINITY_SCORE;
-    bool found_pv = false;
-
-    MovePicker picker(ctx, 0, tt_move, ctx.prev_best_move);
-    while (Move32 move = picker.next()) {
-        make_move(ctx.board, move);
-
-        if (is_illegal(ctx.board)) {
-            unmake_move(ctx.board, move);
-            continue;
-        }
-
-        // PVS search
-        int score;
-        if (found_pv) {
-            score = -alpha_beta(ctx, depth - 1, -alpha - 1, -alpha, 1, false);
-            if (score > alpha && score < beta && !ctx.stop_search) {
-                score = -alpha_beta(ctx, depth - 1, -beta, -alpha, 1, true);
-            }
-        } else {
-            score = -alpha_beta(ctx, depth - 1, -beta, -alpha, 1, true);
-        }
-
-        unmake_move(ctx.board, move);
-
-        if (ctx.stop_search) {
-            // Use partial result if we have one
-            if (best_move.data == 0) {
-                best_move = move;
-                best_score = score;
-            }
-            return {best_move, best_score};
-        }
-
-        if (score > best_score) {
-            best_score = score;
-            best_move = move;
-        }
-
-        if (score > alpha) {
-            alpha = score;
-            found_pv = true;
-            ctx.update_pv(0, move);
-        }
-    }
-
-    if (!ctx.stop_search && best_move.data != 0) {
-        TTFlag flag = found_pv ? TT_EXACT : TT_UPPER;
-        ctx.tt.store(ctx.board.hash, depth, best_score, flag, best_move);
-    }
-
-    return {best_move, best_score};
-}
-
 SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
     SearchContext ctx(board, tt, time_limit_ms);
 
@@ -623,14 +597,12 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
             beta = std::min(INFINITY_SCORE, result.score + delta);
         }
 
-        Move32 move;
         int score;
 
         // Aspiration window loop: widen on fail-low or fail-high
         while (true) {
-            auto [m, s] = search_root(ctx, depth, alpha, beta);
-            move = m;
-            score = s;
+            // Call alpha_beta with ply=0 for root search
+            score = alpha_beta(ctx, depth, alpha, beta, 0, true);
 
             if (ctx.stop_search) break;
 
@@ -651,6 +623,9 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
             // Score within window - done with this depth
             break;
         }
+
+        // Get best move from PV (alpha_beta with ply=0 stores it there)
+        Move32 move = ctx.pv_table[0][0];
 
         if (ctx.stop_search) {
             if (move.data != 0) {

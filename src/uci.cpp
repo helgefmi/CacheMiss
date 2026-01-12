@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <mutex>
 
 #include <sys/select.h>
 #include <unistd.h>
@@ -30,7 +31,8 @@ static bool ponder_enabled = false;
 // Search state
 static std::atomic<bool> search_running{false};
 static SearchResult last_result;
-static int moves_played = 0;  // Track game progress for time management
+static std::mutex result_mutex;  // Protects last_result from data races
+static int moves_played = 0;     // Track game progress for time management
 
 // Estimate moves remaining based on game phase
 static int estimate_moves_remaining(int moves_played) {
@@ -218,10 +220,12 @@ static void parse_setoption(const std::string& line, size_t& hash_mb, bool& hash
 }
 
 // Output bestmove with optional ponder move
-static void output_bestmove(const SearchResult& result) {
-    std::cout << "bestmove " << result.best_move.to_uci();
-    if (result.pv_length >= 2) {
-        std::cout << " ponder " << result.pv[1].to_uci();
+// Acquires result_mutex to safely read last_result
+static void output_bestmove() {
+    std::lock_guard<std::mutex> lock(result_mutex);
+    std::cout << "bestmove " << last_result.best_move.to_uci();
+    if (last_result.pv_length >= 2) {
+        std::cout << " ponder " << last_result.pv[1].to_uci();
     }
     std::cout << std::endl;
 }
@@ -272,18 +276,21 @@ void uci_loop(size_t hash_mb) {
             is_pondering = params.is_ponder;
             ponder_time_ms = params.normal_time_ms;  // Save for ponderhit
 
-            // Reset flags for new search
-            global_stop_flag.store(false, std::memory_order_relaxed);
-            global_search_time_limit_ms.store(0, std::memory_order_relaxed);  // Use search's time_ms
+            // Reset search controller for new search
+            g_search_controller.reset();
             search_running.store(true, std::memory_order_relaxed);
 
             std::thread search_thread([&board, &tt, time_ms = params.time_ms]() {
-                last_result = search(board, tt, time_ms);
-                search_running.store(false, std::memory_order_relaxed);
+                SearchResult result = search(board, tt, time_ms);
+                {
+                    std::lock_guard<std::mutex> lock(result_mutex);
+                    last_result = result;
+                }
+                search_running.store(false, std::memory_order_release);
             });
 
             // Poll for stop/ponderhit while search is running
-            while (search_running.load(std::memory_order_relaxed)) {
+            while (search_running.load(std::memory_order_acquire)) {
                 if (input_available()) {
                     std::string input_cmd;
                     if (!std::getline(std::cin, input_cmd)) break;
@@ -291,19 +298,19 @@ void uci_loop(size_t hash_mb) {
 
                     if (input_cmd == "stop") {
                         std::cerr << "info string received: stop" << std::endl;
-                        global_stop_flag.store(true, std::memory_order_relaxed);
+                        g_search_controller.request_stop();
                         is_pondering = false;
                     }
                     else if (input_cmd == "ponderhit") {
                         // Opponent played our predicted move, switch to real time control
                         std::cerr << "info string received: ponderhit (limit=" << ponder_time_ms << "ms)" << std::endl;
                         is_pondering = false;
-                        // Set the global time limit so search stops at the right time
-                        global_search_time_limit_ms.store(ponder_time_ms, std::memory_order_relaxed);
+                        // Set the time limit so search stops at the right time
+                        g_search_controller.set_time_limit(ponder_time_ms);
                     }
                     else if (input_cmd == "quit") {
                         std::cerr << "info string received: quit" << std::endl;
-                        global_stop_flag.store(true, std::memory_order_relaxed);
+                        g_search_controller.request_stop();
                         search_thread.join();
                         return;  // Exit the UCI loop
                     }
@@ -335,12 +342,12 @@ void uci_loop(size_t hash_mb) {
                 // Ignore other commands while waiting for ponder to end
             }
 
-            output_bestmove(last_result);
+            output_bestmove();
             moves_played++;
         }
         else if (cmd == "stop") {
             // Stop received when not searching - ignore
-            global_stop_flag.store(true, std::memory_order_relaxed);
+            g_search_controller.request_stop();
         }
         else if (cmd == "ponderhit") {
             // Ponderhit received when not searching - ignore
