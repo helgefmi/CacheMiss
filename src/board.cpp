@@ -72,6 +72,16 @@ Board::Board(std::string_view fen) {
 
     // Compute initial Zobrist hash
     hash = compute_hash(*this);
+
+    // Compute initial phase (Knight=1, Bishop=1, Rook=2, Queen=4, max 24)
+    phase = 0;
+    for (int c = 0; c < 2; ++c) {
+        phase += popcount(pieces[c][(int)Piece::Knight]) * PHASE_VALUES[(int)Piece::Knight];
+        phase += popcount(pieces[c][(int)Piece::Bishop]) * PHASE_VALUES[(int)Piece::Bishop];
+        phase += popcount(pieces[c][(int)Piece::Rook]) * PHASE_VALUES[(int)Piece::Rook];
+        phase += popcount(pieces[c][(int)Piece::Queen]) * PHASE_VALUES[(int)Piece::Queen];
+    }
+    if (phase > 24) phase = 24;
 }
 
 void Board::print() const {

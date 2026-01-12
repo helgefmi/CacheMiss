@@ -23,18 +23,6 @@ constexpr int ISOLATED_PAWN_EG = -10;
 constexpr int BACKWARD_PAWN_MG = -10;
 constexpr int BACKWARD_PAWN_EG = -8;
 
-// Compute game phase (0 = endgame, 24 = opening/middlegame)
-static int compute_phase(const Board& board) {
-    int phase = 0;
-    for (int c = 0; c < 2; ++c) {
-        phase += popcount(board.pieces[c][(int)Piece::Knight]) * 1;
-        phase += popcount(board.pieces[c][(int)Piece::Bishop]) * 1;
-        phase += popcount(board.pieces[c][(int)Piece::Rook]) * 2;
-        phase += popcount(board.pieces[c][(int)Piece::Queen]) * 4;
-    }
-    return std::min(phase, 24);
-}
-
 // Evaluate pawn structure (doubled, isolated, backward pawns)
 static void evaluate_pawn_structure(const Board& board, int& mg, int& eg) {
     for (int c = 0; c < 2; ++c) {
@@ -175,8 +163,8 @@ int evaluate(const Board& board) {
     evaluate_pawn_structure(board, mg_score, eg_score);
     evaluate_passed_pawns(board, mg_score, eg_score);
 
-    // Interpolate between middlegame and endgame
-    int phase = compute_phase(board);
+    // Interpolate between middlegame and endgame using incremental phase
+    int phase = std::min(board.phase, 24);  // Clamp to 24 (shouldn't exceed, but defensive)
     int score = (mg_score * phase + eg_score * (24 - phase)) / 24;
 
     return (board.turn == Color::White) ? score : -score;

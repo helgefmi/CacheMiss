@@ -14,6 +14,7 @@ struct Board {
     std::array<Piece, 64> pieces_on_square;
     std::array<int, 2> king_sq;                     // King square for each color
     u64 hash;  // Zobrist hash
+    int phase;                                      // Game phase (0=endgame, 24=opening) for tapered eval
     std::array<u64, 1024> hash_stack;               // Stack for hash restoration in unmake
     std::array<u8, 1024> halfmove_stack;            // Stack for halfmove_clock restoration
     int hash_sp = 0;                                // Stack pointer

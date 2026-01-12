@@ -371,6 +371,9 @@ void make_move(Board& board, Move32& move) {
 
     // Handle captures
     if (captured != Piece::None) {
+        // Update phase for captured piece
+        board.phase -= PHASE_VALUES[(int)captured];
+
         if (move.is_en_passant()) {
             int captured_sq = (turn == Color::White) ? to - 8 : to + 8;
             board.pieces_on_square[captured_sq] = Piece::None;
@@ -382,6 +385,11 @@ void make_move(Board& board, Move32& move) {
             board.pieces[(int)enemy][(int)captured] &= ~square_bb(to);
             h ^= zobrist::pieces[(int)enemy][(int)captured][to];
         }
+    }
+
+    // Update phase for promotion (pawn becomes higher-value piece)
+    if (promotion != Piece::None) {
+        board.phase += PHASE_VALUES[(int)promotion];
     }
 
     // Handle castling
@@ -454,6 +462,9 @@ void unmake_move(Board& board, const Move32& move) {
 
     // Restore captured piece
     if (captured != Piece::None) {
+        // Restore phase for captured piece
+        board.phase += PHASE_VALUES[(int)captured];
+
         if (move.is_en_passant()) {
             int captured_sq = (turn == Color::White) ? to - 8 : to + 8;
             board.pieces_on_square[captured_sq] = Piece::Pawn;
@@ -464,6 +475,11 @@ void unmake_move(Board& board, const Move32& move) {
             board.occupied[(int)enemy] |= square_bb(to);
             board.pieces[(int)enemy][(int)captured] |= square_bb(to);
         }
+    }
+
+    // Restore phase for undone promotion
+    if (promotion != Piece::None) {
+        board.phase -= PHASE_VALUES[(int)promotion];
     }
 
     // Undo castling rook move

@@ -76,6 +76,7 @@ constexpr char color_to_char(Color c) {
 //
 
 enum struct Piece : u8 { Pawn = 0, Knight = 1, Bishop = 2, Rook = 3, Queen = 4, King = 5, None = 7 };
+
 constexpr char piece_to_char(Piece p) {
     switch (p) {
         case Piece::Pawn:   return 'P';
@@ -87,6 +88,19 @@ constexpr char piece_to_char(Piece p) {
         default:            return '?';
     }
 }
+
+// Phase values for tapered evaluation (Knight=1, Bishop=1, Rook=2, Queen=4)
+// Max phase = 24 (2*1 + 2*1 + 2*2 + 2*4) * 2 = 24
+constexpr int PHASE_VALUES[] = {
+    0,  // Pawn
+    1,  // Knight
+    1,  // Bishop
+    2,  // Rook
+    4,  // Queen
+    0,  // King
+    0,  // (unused)
+    0   // None
+};
 
 //
 // Square utilities
