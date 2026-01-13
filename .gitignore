@@ -2,9 +2,10 @@ build/
 build-release/
 builds/
 .cache/
+compile_commands.json
+TODO.md
 CLAUDE.md
 data/
 *.log
-lichess-bot/
-config.yml
 lichess_bot_auto_logs/
+config.yml

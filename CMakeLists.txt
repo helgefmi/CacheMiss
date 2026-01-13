@@ -1,9 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
 
-# Force clang++ (must be set before project())
-set(CMAKE_CXX_COMPILER clang++)
-
 project(CacheMiss VERSION 0.1.0 LANGUAGES CXX)
+
+# LTO: use thin for Clang, regular for GCC
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set(LTO_FLAG "-flto=thin")
+else()
+    set(LTO_FLAG "-flto")
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,16 +40,16 @@ set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address,undefined")
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO
     "-O3 -g -DNDEBUG -fno-omit-frame-pointer \
     -march=native -mtune=native \
-    -flto=thin \
+    ${LTO_FLAG} \
     -Wall -Wextra -Wpedantic")
-set(CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO "-flto=thin")
+set(CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO "${LTO_FLAG}")
 
 # Release: maximum performance, no debug info
 set(CMAKE_CXX_FLAGS_RELEASE
     "-O3 -DNDEBUG \
     -march=native -mtune=native \
-    -flto=thin")
-set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto=thin")
+    ${LTO_FLAG}")
+set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${LTO_FLAG}")
 
 # Core chess library (shared between engine and tools)
 add_library(cachemiss_core STATIC
@@ -88,14 +92,3 @@ target_link_libraries(tune_pst cachemiss_core)
 # WAC comparison tool
 add_executable(wac_compare tools/wac_compare.cpp)
 target_link_libraries(wac_compare pthread)
-
-# Lichess bot tool (requires OpenSSL for HTTPS)
-find_package(OpenSSL QUIET)
-if(OPENSSL_FOUND)
-    add_executable(lichess tools/lichess.cpp)
-    target_include_directories(lichess PRIVATE src third_party)
-    target_link_libraries(lichess cachemiss_core OpenSSL::SSL OpenSSL::Crypto pthread)
-else()
-    message(STATUS "OpenSSL not found - lichess tool will not be built")
-    message(STATUS "Install with: apt install libssl-dev")
-endif()
