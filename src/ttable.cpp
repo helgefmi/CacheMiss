@@ -48,20 +48,37 @@ void TTable::store(u64 hash, int depth, int score, TTFlag flag, Move32 best_move
     TTEntry& entry = table[hash & mask];
 
     stats.stores++;
+
+    // Age-aware replacement: consider both depth and staleness
+    // An old entry needs to be significantly deeper to justify keeping it
     if (entry.hash != 0) {
+        // Calculate age difference (handles wraparound via unsigned arithmetic)
+        int age_diff = static_cast<u8>(current_generation - entry.generation);
+
+        // Replace if: same position, OR new entry is recent enough relative to depth
+        // Formula: replace if new_depth + age_bonus >= old_depth
+        // Each generation of age gives the new entry a +2 depth bonus
+        bool same_position = (entry.hash == hash);
+        bool should_replace = same_position ||
+                              (depth + age_diff * 2 >= entry.depth);
+
+        if (!should_replace) {
+            return;  // Keep the existing deeper, recent entry
+        }
         stats.overwrites++;
     }
 
-    // Always replace (simple scheme, can improve later)
     entry.hash = hash;
     entry.score = static_cast<s16>(score);
     entry.depth = static_cast<u8>(depth);
     entry.flag = flag;
+    entry.generation = current_generation;
     entry.best_move = best_move;
 }
 
 void TTable::clear() {
-    std::fill(table.begin(), table.end(), TTEntry{0, 0, 0, 0, Move32(0)});
+    std::fill(table.begin(), table.end(), TTEntry{0, 0, 0, 0, 0, Move32(0)});
+    current_generation = 0;
     reset_stats();
 }
 

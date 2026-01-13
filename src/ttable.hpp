@@ -11,6 +11,7 @@ struct TTEntry {
     s16 score;
     u8 depth;
     u8 flag;
+    u8 generation;
     Move32 best_move;
 };
 
@@ -24,10 +25,14 @@ struct TTStats {
 class TTable {
     std::vector<TTEntry> table;
     size_t mask;
+    u8 current_generation = 0;
     mutable TTStats stats;
 
 public:
     explicit TTable(size_t mb);
+
+    // Call before each new search to age existing entries
+    void new_search() { current_generation++; }
 
     // Probe the TT. Returns true if entry can be used for cutoff.
     // Always sets best_move if entry exists (for move ordering).

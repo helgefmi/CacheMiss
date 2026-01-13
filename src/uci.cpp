@@ -276,8 +276,9 @@ void uci_loop(size_t hash_mb) {
             is_pondering = params.is_ponder;
             ponder_time_ms = params.normal_time_ms;  // Save for ponderhit
 
-            // Reset search controller for new search
+            // Reset search controller and age TT entries for new search
             g_search_controller.reset();
+            tt.new_search();
             search_running.store(true, std::memory_order_relaxed);
 
             std::thread search_thread([&board, &tt, time_ms = params.time_ms]() {
