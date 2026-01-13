@@ -33,6 +33,7 @@ static std::atomic<bool> search_running{false};
 static SearchResult last_result;
 static std::mutex result_mutex;  // Protects last_result from data races
 static int moves_played = 0;     // Track game progress for time management
+static std::chrono::steady_clock::time_point search_start_time;  // For ponderhit elapsed calculation
 
 // Estimate moves remaining based on game phase
 static int estimate_moves_remaining(int moves_played) {
@@ -280,6 +281,7 @@ void uci_loop(size_t hash_mb) {
             g_search_controller.reset();
             tt.new_search();
             search_running.store(true, std::memory_order_relaxed);
+            search_start_time = std::chrono::steady_clock::now();  // Track for ponderhit
 
             std::thread search_thread([&board, &tt, time_ms = params.time_ms]() {
                 SearchResult result = search(board, tt, time_ms);
@@ -304,10 +306,16 @@ void uci_loop(size_t hash_mb) {
                     }
                     else if (input_cmd == "ponderhit") {
                         // Opponent played our predicted move, switch to real time control
-                        std::cerr << "info string received: ponderhit (limit=" << ponder_time_ms << "ms)" << std::endl;
+                        // Time limit = elapsed ponder time + normal allocation
+                        // This gives us our full time AFTER ponderhit, plus bonus ponder time
+                        auto now = std::chrono::steady_clock::now();
+                        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - search_start_time).count();
+                        int new_limit = static_cast<int>(elapsed_ms) + ponder_time_ms;
+                        std::cerr << "info string received: ponderhit (elapsed=" << elapsed_ms
+                                  << "ms, adding=" << ponder_time_ms << "ms, limit=" << new_limit << "ms)" << std::endl;
                         is_pondering = false;
-                        // Set the time limit so search stops at the right time
-                        g_search_controller.set_time_limit(ponder_time_ms);
+                        g_search_controller.set_time_limit(new_limit);
                     }
                     else if (input_cmd == "quit") {
                         std::cerr << "info string received: quit" << std::endl;
