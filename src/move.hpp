@@ -2,7 +2,25 @@
 
 #include "cachemiss.hpp"
 #include "board.hpp"
+#include "magic_tables.hpp"
 #include <string>
+
+// Attack generation using magic bitboards
+inline Bitboard get_rook_attacks(int square, Bitboard occupancy) {
+    occupancy &= ROOK_MASKS[square];
+    int index = (occupancy * ROOK_MAGICS[square]) >> ROOK_SHIFTS[square];
+    return ROOK_ATTACKS[ROOK_OFFSETS[square] + index];
+}
+
+inline Bitboard get_bishop_attacks(int square, Bitboard occupancy) {
+    occupancy &= BISHOP_MASKS[square];
+    int index = (occupancy * BISHOP_MAGICS[square]) >> BISHOP_SHIFTS[square];
+    return BISHOP_ATTACKS[BISHOP_OFFSETS[square] + index];
+}
+
+inline Bitboard get_queen_attacks(int square, Bitboard occupancy) {
+    return get_rook_attacks(square, occupancy) | get_bishop_attacks(square, occupancy);
+}
 
 // Move generation type: All, Noisy (captures + promotions), or Quiet (non-captures, non-promotions)
 enum class MoveType { All, Noisy, Quiet };
