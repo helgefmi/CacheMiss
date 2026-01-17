@@ -31,7 +31,7 @@ endif()
 set(CMAKE_CXX_FLAGS_DEBUG
     "-O0 -g3 -fno-omit-frame-pointer \
     -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion \
-    -Wno-unused-functions -Wnull-dereference -Wdouble-promotion -Wformat=2 \
+    -Wnull-dereference -Wdouble-promotion -Wformat=2 \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -D_GLIBCXX_ASSERTIONS")
 set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address,undefined")

@@ -46,7 +46,7 @@ inline Bitboard msb(Bitboard bb) {
     return Bitboard(1) << msb_index(bb);
 }
 
-static void print_bitboard(Bitboard bb) {
+[[maybe_unused]] static void print_bitboard(Bitboard bb) {
     for (int rank = 7; rank >= 0; --rank) {
         for (int file = 0; file < 8; ++file) {
             int sq = rank * 8 + file;
