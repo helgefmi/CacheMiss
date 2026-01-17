@@ -30,6 +30,20 @@ constexpr int SPACE_EXTENDED_EG = 0;
 constexpr int KING_ATTACK_MG = 8;   // Per square attacked near enemy king
 constexpr int KING_ATTACK_EG = 2;   // Less important in endgame
 
+// Bishop pair bonus
+constexpr int BISHOP_PAIR_MG = 30;
+constexpr int BISHOP_PAIR_EG = 50;
+
+// Rook on open/semi-open file bonuses
+constexpr int ROOK_OPEN_FILE_MG = 20;
+constexpr int ROOK_OPEN_FILE_EG = 10;
+constexpr int ROOK_SEMI_OPEN_FILE_MG = 10;
+constexpr int ROOK_SEMI_OPEN_FILE_EG = 5;
+
+// Rook on 7th rank bonus
+constexpr int ROOK_ON_SEVENTH_MG = 20;
+constexpr int ROOK_ON_SEVENTH_EG = 40;
+
 // Passed pawn bonus by rank (from pawn's perspective)
 // Index = rank for white (2-7), flipped rank for black
 constexpr int PASSED_PAWN_MG[8] = { 0, 0, 5, 10, 20, 35, 60, 100 };
@@ -48,6 +62,16 @@ constexpr int ISOLATED_PAWN_MG = -15;
 constexpr int ISOLATED_PAWN_EG = -10;
 constexpr int BACKWARD_PAWN_MG = -10;
 constexpr int BACKWARD_PAWN_EG = -8;
+
+// Compute pawn attacks for one side
+static Bitboard compute_pawn_attacks(Bitboard pawns, int color) {
+    Bitboard attacks = 0;
+    while (pawns) {
+        attacks |= PAWN_ATTACKS[color][lsb_index(pawns)];
+        pawns &= pawns - 1;
+    }
+    return attacks;
+}
 
 // Evaluate pawn structure (doubled, isolated, backward pawns)
 static void evaluate_pawn_structure(const Board& board, int& mg, int& eg) {
@@ -160,19 +184,34 @@ static void evaluate_passed_pawns(const Board& board, int& mg, int& eg) {
     }
 }
 
-// Evaluate piece activity: mobility, space control, and king safety
-static void evaluate_pieces(const Board& board, int& mg, int& eg) {
+// Main evaluation function - combines PST, mobility, and positional features
+int evaluate(const Board& board) {
+    int mg_score = 0;
+    int eg_score = 0;
+
     Bitboard occ = board.all_occupied;
     Bitboard attacks[2] = {0, 0};  // Combined attack bitboards per side
 
+    // Compute pawn attacks early (needed for safe mobility)
+    Bitboard pawn_attacks[2];
+    pawn_attacks[0] = compute_pawn_attacks(board.pieces[0][(int)Piece::Pawn], 0);
+    pawn_attacks[1] = compute_pawn_attacks(board.pieces[1][(int)Piece::Pawn], 1);
+    attacks[0] |= pawn_attacks[0];
+    attacks[1] |= pawn_attacks[1];
+
+    // Evaluate pieces - combined PST + mobility + positional features
     for (int c = 0; c < 2; ++c) {
         int sign = (c == 0) ? 1 : -1;
         Bitboard friendly = board.occupied[c];
+        Bitboard enemy_pawn_att = pawn_attacks[c ^ 1];  // For safe mobility
 
-        // Pawns (attacks only, no mobility score for pawns)
+        // Pawns (PST only, no mobility)
         Bitboard pawns = board.pieces[c][(int)Piece::Pawn];
         while (pawns) {
-            attacks[c] |= PAWN_ATTACKS[c][lsb_index(pawns)];
+            int sq = lsb_index(pawns);
+            int flipped_sq = (c == 0) ? sq : (sq ^ 56);
+            mg_score += sign * PST_MG[(int)Piece::Pawn][flipped_sq];
+            eg_score += sign * PST_EG[(int)Piece::Pawn][flipped_sq];
             pawns &= pawns - 1;
         }
 
@@ -180,35 +219,94 @@ static void evaluate_pieces(const Board& board, int& mg, int& eg) {
         Bitboard knights = board.pieces[c][(int)Piece::Knight];
         while (knights) {
             int sq = lsb_index(knights);
+            int flipped_sq = (c == 0) ? sq : (sq ^ 56);
+
+            // PST
+            mg_score += sign * PST_MG[(int)Piece::Knight][flipped_sq];
+            eg_score += sign * PST_EG[(int)Piece::Knight][flipped_sq];
+
+            // Mobility (safe squares only - not attacked by enemy pawns)
             Bitboard att = KNIGHT_MOVES[sq];
             attacks[c] |= att;
-            int mob = popcount(att & ~friendly);
-            mg += sign * MOBILITY_KNIGHT_MG[mob];
-            eg += sign * MOBILITY_KNIGHT_EG[mob];
+            int mob = popcount(att & ~friendly & ~enemy_pawn_att);
+            mg_score += sign * MOBILITY_KNIGHT_MG[mob];
+            eg_score += sign * MOBILITY_KNIGHT_EG[mob];
+
             knights &= knights - 1;
         }
 
         // Bishops
         Bitboard bishops = board.pieces[c][(int)Piece::Bishop];
+        int bishop_count = popcount(bishops);
+
+        // Bishop pair bonus
+        if (bishop_count >= 2) {
+            mg_score += sign * BISHOP_PAIR_MG;
+            eg_score += sign * BISHOP_PAIR_EG;
+        }
+
         while (bishops) {
             int sq = lsb_index(bishops);
+            int flipped_sq = (c == 0) ? sq : (sq ^ 56);
+
+            // PST
+            mg_score += sign * PST_MG[(int)Piece::Bishop][flipped_sq];
+            eg_score += sign * PST_EG[(int)Piece::Bishop][flipped_sq];
+
+            // Mobility (safe squares)
             Bitboard att = get_bishop_attacks(sq, occ);
             attacks[c] |= att;
-            int mob = std::min(popcount(att & ~friendly), 13);
-            mg += sign * MOBILITY_BISHOP_MG[mob];
-            eg += sign * MOBILITY_BISHOP_EG[mob];
+            int mob = std::min(popcount(att & ~friendly & ~enemy_pawn_att), 13);
+            mg_score += sign * MOBILITY_BISHOP_MG[mob];
+            eg_score += sign * MOBILITY_BISHOP_EG[mob];
+
             bishops &= bishops - 1;
         }
 
         // Rooks
         Bitboard rooks = board.pieces[c][(int)Piece::Rook];
+        Bitboard our_pawns = board.pieces[c][(int)Piece::Pawn];
+        Bitboard enemy_pawns = board.pieces[c ^ 1][(int)Piece::Pawn];
+        // X-ray occupancy: remove friendly rooks so batteries see through each other
+        Bitboard occ_xray_rooks = occ ^ rooks;
+
         while (rooks) {
             int sq = lsb_index(rooks);
-            Bitboard att = get_rook_attacks(sq, occ);
+            int flipped_sq = (c == 0) ? sq : (sq ^ 56);
+            int file = sq % 8;
+            int rank = sq / 8;
+
+            // PST
+            mg_score += sign * PST_MG[(int)Piece::Rook][flipped_sq];
+            eg_score += sign * PST_EG[(int)Piece::Rook][flipped_sq];
+
+            // Mobility with x-ray through friendly rooks (safe squares)
+            Bitboard att = get_rook_attacks(sq, occ_xray_rooks);
             attacks[c] |= att;
-            int mob = std::min(popcount(att & ~friendly), 14);
-            mg += sign * MOBILITY_ROOK_MG[mob];
-            eg += sign * MOBILITY_ROOK_EG[mob];
+            int mob = std::min(popcount(att & ~friendly & ~enemy_pawn_att), 14);
+            mg_score += sign * MOBILITY_ROOK_MG[mob];
+            eg_score += sign * MOBILITY_ROOK_EG[mob];
+
+            // Open/semi-open file bonus
+            Bitboard file_mask = FILE_MASKS[file];
+            bool no_our_pawns = (our_pawns & file_mask) == 0;
+            bool no_enemy_pawns = (enemy_pawns & file_mask) == 0;
+
+            if (no_our_pawns && no_enemy_pawns) {
+                mg_score += sign * ROOK_OPEN_FILE_MG;
+                eg_score += sign * ROOK_OPEN_FILE_EG;
+            } else if (no_our_pawns) {
+                mg_score += sign * ROOK_SEMI_OPEN_FILE_MG;
+                eg_score += sign * ROOK_SEMI_OPEN_FILE_EG;
+            }
+
+            // Rook on 7th rank
+            int seventh_rank = (c == 0) ? 6 : 1;
+            if (rank == seventh_rank) {
+                mg_score += sign * ROOK_ON_SEVENTH_MG;
+                eg_score += sign * ROOK_ON_SEVENTH_EG;
+            }
+
             rooks &= rooks - 1;
         }
 
@@ -216,63 +314,29 @@ static void evaluate_pieces(const Board& board, int& mg, int& eg) {
         Bitboard queens = board.pieces[c][(int)Piece::Queen];
         while (queens) {
             int sq = lsb_index(queens);
+            int flipped_sq = (c == 0) ? sq : (sq ^ 56);
+
+            // PST
+            mg_score += sign * PST_MG[(int)Piece::Queen][flipped_sq];
+            eg_score += sign * PST_EG[(int)Piece::Queen][flipped_sq];
+
+            // Mobility (safe squares)
             Bitboard att = get_queen_attacks(sq, occ);
             attacks[c] |= att;
-            int mob = std::min(popcount(att & ~friendly), 27);
-            mg += sign * MOBILITY_QUEEN_MG[mob];
-            eg += sign * MOBILITY_QUEEN_EG[mob];
+            int mob = std::min(popcount(att & ~friendly & ~enemy_pawn_att), 27);
+            mg_score += sign * MOBILITY_QUEEN_MG[mob];
+            eg_score += sign * MOBILITY_QUEEN_EG[mob];
+
             queens &= queens - 1;
         }
 
-        // King attacks (for space calculation only, no mobility bonus)
-        attacks[c] |= KING_MOVES[board.king_sq[c]];
-    }
-
-    // Space evaluation: control over key zones
-    int center_diff = popcount(attacks[0] & CENTER_4) - popcount(attacks[1] & CENTER_4);
-    mg += center_diff * SPACE_CENTER_MG;
-    eg += center_diff * SPACE_CENTER_EG;
-
-    int ext_diff = popcount(attacks[0] & EXTENDED_CENTER) - popcount(attacks[1] & EXTENDED_CENTER);
-    mg += ext_diff * SPACE_EXTENDED_MG;
-    eg += ext_diff * SPACE_EXTENDED_EG;
-
-    // King safety: count attacks on enemy king zone
-    Bitboard white_king_zone = KING_MOVES[board.king_sq[0]] | square_bb(board.king_sq[0]);
-    Bitboard black_king_zone = KING_MOVES[board.king_sq[1]] | square_bb(board.king_sq[1]);
-
-    // White's attacks on black's king zone (good for white)
-    int white_king_pressure = popcount(attacks[0] & black_king_zone);
-    // Black's attacks on white's king zone (good for black)
-    int black_king_pressure = popcount(attacks[1] & white_king_zone);
-
-    int king_safety_diff = white_king_pressure - black_king_pressure;
-    mg += king_safety_diff * KING_ATTACK_MG;
-    eg += king_safety_diff * KING_ATTACK_EG;
-}
-
-int evaluate(const Board& board) {
-    int mg_score = 0;
-    int eg_score = 0;
-
-    for (int piece = 0; piece < 6; ++piece) {
-        // White pieces
-        Bitboard white_bb = board.pieces[0][piece];
-        while (white_bb) {
-            int sq = lsb_index(white_bb);
-            mg_score += PST_MG[piece][sq];
-            eg_score += PST_EG[piece][sq];
-            white_bb &= white_bb - 1;
-        }
-
-        // Black pieces (flip square vertically)
-        Bitboard black_bb = board.pieces[1][piece];
-        while (black_bb) {
-            int sq = lsb_index(black_bb);
-            int flipped_sq = sq ^ 56;
-            mg_score -= PST_MG[piece][flipped_sq];
-            eg_score -= PST_EG[piece][flipped_sq];
-            black_bb &= black_bb - 1;
+        // King PST only (no mobility score)
+        {
+            int sq = board.king_sq[c];
+            int flipped_sq = (c == 0) ? sq : (sq ^ 56);
+            mg_score += sign * PST_MG[(int)Piece::King][flipped_sq];
+            eg_score += sign * PST_EG[(int)Piece::King][flipped_sq];
+            attacks[c] |= KING_MOVES[sq];
         }
     }
 
@@ -280,11 +344,28 @@ int evaluate(const Board& board) {
     evaluate_pawn_structure(board, mg_score, eg_score);
     evaluate_passed_pawns(board, mg_score, eg_score);
 
-    // Piece activity: mobility, space, king safety
-    evaluate_pieces(board, mg_score, eg_score);
+    // Space evaluation: control over key zones
+    int center_diff = popcount(attacks[0] & CENTER_4) - popcount(attacks[1] & CENTER_4);
+    mg_score += center_diff * SPACE_CENTER_MG;
+    eg_score += center_diff * SPACE_CENTER_EG;
+
+    int ext_diff = popcount(attacks[0] & EXTENDED_CENTER) - popcount(attacks[1] & EXTENDED_CENTER);
+    mg_score += ext_diff * SPACE_EXTENDED_MG;
+    eg_score += ext_diff * SPACE_EXTENDED_EG;
+
+    // King safety: count attacks on enemy king zone
+    Bitboard white_king_zone = KING_MOVES[board.king_sq[0]] | square_bb(board.king_sq[0]);
+    Bitboard black_king_zone = KING_MOVES[board.king_sq[1]] | square_bb(board.king_sq[1]);
+
+    int white_king_pressure = popcount(attacks[0] & black_king_zone);
+    int black_king_pressure = popcount(attacks[1] & white_king_zone);
+
+    int king_safety_diff = white_king_pressure - black_king_pressure;
+    mg_score += king_safety_diff * KING_ATTACK_MG;
+    eg_score += king_safety_diff * KING_ATTACK_EG;
 
     // Interpolate between middlegame and endgame using incremental phase
-    int phase = std::min(board.phase, 24);  // Clamp to 24 (shouldn't exceed, but defensive)
+    int phase = std::min(board.phase, 24);
     int score = (mg_score * phase + eg_score * (24 - phase)) / 24;
 
     return (board.turn == Color::White) ? score : -score;
