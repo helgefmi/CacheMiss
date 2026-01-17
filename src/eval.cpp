@@ -1,67 +1,13 @@
 #include "eval.hpp"
-#include "pst_tables.hpp"
+#include "eval_params.hpp"
 #include "precalc.hpp"
 #include "move.hpp"
 
 #include <algorithm>
 
-// Mobility tables (indexed by reachable square count)
-constexpr int MOBILITY_KNIGHT_MG[9] = {-50, -25, -10, 0, 10, 20, 28, 34, 38};
-constexpr int MOBILITY_KNIGHT_EG[9] = {-60, -30, -10, 5, 15, 25, 32, 38, 42};
-
-constexpr int MOBILITY_BISHOP_MG[14] = {-40, -15, 0, 12, 22, 30, 36, 42, 46, 50, 54, 56, 58, 60};
-constexpr int MOBILITY_BISHOP_EG[14] = {-50, -20, 0, 15, 28, 38, 48, 55, 62, 68, 72, 76, 78, 80};
-
-constexpr int MOBILITY_ROOK_MG[15] = {-50, -20, -5, 0, 5, 10, 15, 20, 24, 28, 32, 35, 38, 40, 42};
-constexpr int MOBILITY_ROOK_EG[15] = {-70, -30, -5, 10, 25, 40, 55, 68, 80, 90, 100, 108, 115, 120, 125};
-
-constexpr int MOBILITY_QUEEN_MG[28] = {-30, -15, -5, 0, 3, 6, 9, 12, 15, 18, 20, 22, 24, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41};
-constexpr int MOBILITY_QUEEN_EG[28] = {-40, -20, -5, 5, 12, 18, 24, 30, 36, 42, 47, 52, 57, 62, 66, 70, 74, 78, 81, 84, 87, 90, 93, 96, 99, 102, 105, 108};
-
 // Space evaluation zones
 constexpr Bitboard CENTER_4 = 0x0000001818000000ULL;         // d4, d5, e4, e5
 constexpr Bitboard EXTENDED_CENTER = 0x00003C3C3C3C0000ULL;  // c3-f6 region
-constexpr int SPACE_CENTER_MG = 4;
-constexpr int SPACE_CENTER_EG = 1;
-constexpr int SPACE_EXTENDED_MG = 1;
-constexpr int SPACE_EXTENDED_EG = 0;
-
-// King safety: penalty per attack on king zone (king square + adjacent squares)
-constexpr int KING_ATTACK_MG = 8;   // Per square attacked near enemy king
-constexpr int KING_ATTACK_EG = 2;   // Less important in endgame
-
-// Bishop pair bonus
-constexpr int BISHOP_PAIR_MG = 30;
-constexpr int BISHOP_PAIR_EG = 50;
-
-// Rook on open/semi-open file bonuses
-constexpr int ROOK_OPEN_FILE_MG = 20;
-constexpr int ROOK_OPEN_FILE_EG = 10;
-constexpr int ROOK_SEMI_OPEN_FILE_MG = 10;
-constexpr int ROOK_SEMI_OPEN_FILE_EG = 5;
-
-// Rook on 7th rank bonus
-constexpr int ROOK_ON_SEVENTH_MG = 20;
-constexpr int ROOK_ON_SEVENTH_EG = 40;
-
-// Passed pawn bonus by rank (from pawn's perspective)
-// Index = rank for white (2-7), flipped rank for black
-constexpr int PASSED_PAWN_MG[8] = { 0, 0, 5, 10, 20, 35, 60, 100 };
-constexpr int PASSED_PAWN_EG[8] = { 0, 0, 10, 20, 40, 70, 120, 200 };
-
-// Bonuses for protected/connected passers
-constexpr int PROTECTED_PASSER_MG = 10;
-constexpr int PROTECTED_PASSER_EG = 20;
-constexpr int CONNECTED_PASSER_MG = 15;
-constexpr int CONNECTED_PASSER_EG = 25;
-
-// Pawn structure penalties
-constexpr int DOUBLED_PAWN_MG = -10;
-constexpr int DOUBLED_PAWN_EG = -20;
-constexpr int ISOLATED_PAWN_MG = -15;
-constexpr int ISOLATED_PAWN_EG = -10;
-constexpr int BACKWARD_PAWN_MG = -10;
-constexpr int BACKWARD_PAWN_EG = -8;
 
 // Compute pawn attacks for one side
 static Bitboard compute_pawn_attacks(Bitboard pawns, int color) {

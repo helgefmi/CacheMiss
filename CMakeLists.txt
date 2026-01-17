@@ -31,7 +31,7 @@ endif()
 set(CMAKE_CXX_FLAGS_DEBUG
     "-O0 -g3 -fno-omit-frame-pointer \
     -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion \
-    -Wnull-dereference -Wdouble-promotion -Wformat=2 \
+    -Wno-unused-functions -Wnull-dereference -Wdouble-promotion -Wformat=2 \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -D_GLIBCXX_ASSERTIONS")
 set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address,undefined")
@@ -85,9 +85,9 @@ target_link_libraries(pgn2epd cachemiss_core)
 add_executable(gen_magics tools/gen_magics.cpp)
 target_include_directories(gen_magics PRIVATE src)
 
-# PST tuner tool
-add_executable(tune_pst tools/tune_pst.cpp)
-target_link_libraries(tune_pst cachemiss_core)
+# Eval tuner tool
+add_executable(tune_eval tools/tune_eval.cpp)
+target_link_libraries(tune_eval cachemiss_core)
 
 # WAC comparison tool
 add_executable(wac_compare tools/wac_compare.cpp)
