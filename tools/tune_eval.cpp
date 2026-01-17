@@ -408,50 +408,56 @@ struct TrainingPosition {
 // ============================================================================
 
 struct Gradients {
-    // PST tables
-    std::array<std::array<double, 64>, 6> pst_mg;
-    std::array<std::array<double, 64>, 6> pst_eg;
-    std::array<std::array<int, 64>, 6> pst_counts;
+    // PST tables - separate tracking for white and black
+    std::array<std::array<double, 64>, 6> pst_white_mg;
+    std::array<std::array<double, 64>, 6> pst_white_eg;
+    std::array<std::array<int, 64>, 6> pst_white_counts;
+    std::array<std::array<double, 64>, 6> pst_black_mg;
+    std::array<std::array<double, 64>, 6> pst_black_eg;
+    std::array<std::array<int, 64>, 6> pst_black_counts;
 
-    // Mobility tables
-    std::array<double, 9> mobility_knight_mg;
-    std::array<double, 9> mobility_knight_eg;
-    std::array<int, 9> mobility_knight_counts;
-    std::array<double, 14> mobility_bishop_mg;
-    std::array<double, 14> mobility_bishop_eg;
-    std::array<int, 14> mobility_bishop_counts;
-    std::array<double, 15> mobility_rook_mg;
-    std::array<double, 15> mobility_rook_eg;
-    std::array<int, 15> mobility_rook_counts;
-    std::array<double, 28> mobility_queen_mg;
-    std::array<double, 28> mobility_queen_eg;
-    std::array<int, 28> mobility_queen_counts;
+    // Mobility tables - separate tracking for white and black
+    std::array<double, 9> mobility_knight_white_mg, mobility_knight_black_mg;
+    std::array<double, 9> mobility_knight_white_eg, mobility_knight_black_eg;
+    std::array<int, 9> mobility_knight_white_counts, mobility_knight_black_counts;
 
-    // Scalar gradients
-    double bishop_pair_mg, bishop_pair_eg;
-    int bishop_pair_count;
-    double rook_open_file_mg, rook_open_file_eg;
-    int rook_open_file_count;
-    double rook_semi_open_file_mg, rook_semi_open_file_eg;
-    int rook_semi_open_file_count;
-    double rook_on_seventh_mg, rook_on_seventh_eg;
-    int rook_on_seventh_count;
+    std::array<double, 14> mobility_bishop_white_mg, mobility_bishop_black_mg;
+    std::array<double, 14> mobility_bishop_white_eg, mobility_bishop_black_eg;
+    std::array<int, 14> mobility_bishop_white_counts, mobility_bishop_black_counts;
 
-    double doubled_pawn_mg, doubled_pawn_eg;
-    int doubled_pawn_count;
-    double isolated_pawn_mg, isolated_pawn_eg;
-    int isolated_pawn_count;
-    double backward_pawn_mg, backward_pawn_eg;
-    int backward_pawn_count;
+    std::array<double, 15> mobility_rook_white_mg, mobility_rook_black_mg;
+    std::array<double, 15> mobility_rook_white_eg, mobility_rook_black_eg;
+    std::array<int, 15> mobility_rook_white_counts, mobility_rook_black_counts;
 
-    std::array<double, 8> passed_pawn_mg;
-    std::array<double, 8> passed_pawn_eg;
-    std::array<int, 8> passed_pawn_counts;
-    double protected_passer_mg, protected_passer_eg;
-    int protected_passer_count;
-    double connected_passer_mg, connected_passer_eg;
-    int connected_passer_count;
+    std::array<double, 28> mobility_queen_white_mg, mobility_queen_black_mg;
+    std::array<double, 28> mobility_queen_white_eg, mobility_queen_black_eg;
+    std::array<int, 28> mobility_queen_white_counts, mobility_queen_black_counts;
 
+    // Scalar gradients - separate tracking for white and black
+    double bishop_pair_white_mg, bishop_pair_white_eg, bishop_pair_black_mg, bishop_pair_black_eg;
+    int bishop_pair_white_count, bishop_pair_black_count;
+    double rook_open_file_white_mg, rook_open_file_white_eg, rook_open_file_black_mg, rook_open_file_black_eg;
+    int rook_open_file_white_count, rook_open_file_black_count;
+    double rook_semi_open_file_white_mg, rook_semi_open_file_white_eg, rook_semi_open_file_black_mg, rook_semi_open_file_black_eg;
+    int rook_semi_open_file_white_count, rook_semi_open_file_black_count;
+    double rook_on_seventh_white_mg, rook_on_seventh_white_eg, rook_on_seventh_black_mg, rook_on_seventh_black_eg;
+    int rook_on_seventh_white_count, rook_on_seventh_black_count;
+
+    double doubled_pawn_white_mg, doubled_pawn_white_eg, doubled_pawn_black_mg, doubled_pawn_black_eg;
+    int doubled_pawn_white_count, doubled_pawn_black_count;
+    double isolated_pawn_white_mg, isolated_pawn_white_eg, isolated_pawn_black_mg, isolated_pawn_black_eg;
+    int isolated_pawn_white_count, isolated_pawn_black_count;
+    double backward_pawn_white_mg, backward_pawn_white_eg, backward_pawn_black_mg, backward_pawn_black_eg;
+    int backward_pawn_white_count, backward_pawn_black_count;
+
+    std::array<double, 8> passed_pawn_white_mg, passed_pawn_white_eg, passed_pawn_black_mg, passed_pawn_black_eg;
+    std::array<int, 8> passed_pawn_white_counts, passed_pawn_black_counts;
+    double protected_passer_white_mg, protected_passer_white_eg, protected_passer_black_mg, protected_passer_black_eg;
+    int protected_passer_white_count, protected_passer_black_count;
+    double connected_passer_white_mg, connected_passer_white_eg, connected_passer_black_mg, connected_passer_black_eg;
+    int connected_passer_white_count, connected_passer_black_count;
+
+    // Space and king safety use differences, so don't need separate tracking
     double space_center_mg, space_center_eg;
     int space_center_count;
     double space_extended_mg, space_extended_eg;
@@ -462,44 +468,59 @@ struct Gradients {
     void clear() {
         for (int p = 0; p < 6; ++p) {
             for (int sq = 0; sq < 64; ++sq) {
-                pst_mg[p][sq] = 0.0;
-                pst_eg[p][sq] = 0.0;
-                pst_counts[p][sq] = 0;
+                pst_white_mg[p][sq] = pst_white_eg[p][sq] = 0.0;
+                pst_white_counts[p][sq] = 0;
+                pst_black_mg[p][sq] = pst_black_eg[p][sq] = 0.0;
+                pst_black_counts[p][sq] = 0;
             }
         }
 
         for (int i = 0; i < 9; ++i) {
-            mobility_knight_mg[i] = mobility_knight_eg[i] = 0.0;
-            mobility_knight_counts[i] = 0;
+            mobility_knight_white_mg[i] = mobility_knight_white_eg[i] = 0.0;
+            mobility_knight_black_mg[i] = mobility_knight_black_eg[i] = 0.0;
+            mobility_knight_white_counts[i] = mobility_knight_black_counts[i] = 0;
         }
         for (int i = 0; i < 14; ++i) {
-            mobility_bishop_mg[i] = mobility_bishop_eg[i] = 0.0;
-            mobility_bishop_counts[i] = 0;
+            mobility_bishop_white_mg[i] = mobility_bishop_white_eg[i] = 0.0;
+            mobility_bishop_black_mg[i] = mobility_bishop_black_eg[i] = 0.0;
+            mobility_bishop_white_counts[i] = mobility_bishop_black_counts[i] = 0;
         }
         for (int i = 0; i < 15; ++i) {
-            mobility_rook_mg[i] = mobility_rook_eg[i] = 0.0;
-            mobility_rook_counts[i] = 0;
+            mobility_rook_white_mg[i] = mobility_rook_white_eg[i] = 0.0;
+            mobility_rook_black_mg[i] = mobility_rook_black_eg[i] = 0.0;
+            mobility_rook_white_counts[i] = mobility_rook_black_counts[i] = 0;
         }
         for (int i = 0; i < 28; ++i) {
-            mobility_queen_mg[i] = mobility_queen_eg[i] = 0.0;
-            mobility_queen_counts[i] = 0;
+            mobility_queen_white_mg[i] = mobility_queen_white_eg[i] = 0.0;
+            mobility_queen_black_mg[i] = mobility_queen_black_eg[i] = 0.0;
+            mobility_queen_white_counts[i] = mobility_queen_black_counts[i] = 0;
         }
 
-        bishop_pair_mg = bishop_pair_eg = 0.0; bishop_pair_count = 0;
-        rook_open_file_mg = rook_open_file_eg = 0.0; rook_open_file_count = 0;
-        rook_semi_open_file_mg = rook_semi_open_file_eg = 0.0; rook_semi_open_file_count = 0;
-        rook_on_seventh_mg = rook_on_seventh_eg = 0.0; rook_on_seventh_count = 0;
+        bishop_pair_white_mg = bishop_pair_white_eg = bishop_pair_black_mg = bishop_pair_black_eg = 0.0;
+        bishop_pair_white_count = bishop_pair_black_count = 0;
+        rook_open_file_white_mg = rook_open_file_white_eg = rook_open_file_black_mg = rook_open_file_black_eg = 0.0;
+        rook_open_file_white_count = rook_open_file_black_count = 0;
+        rook_semi_open_file_white_mg = rook_semi_open_file_white_eg = rook_semi_open_file_black_mg = rook_semi_open_file_black_eg = 0.0;
+        rook_semi_open_file_white_count = rook_semi_open_file_black_count = 0;
+        rook_on_seventh_white_mg = rook_on_seventh_white_eg = rook_on_seventh_black_mg = rook_on_seventh_black_eg = 0.0;
+        rook_on_seventh_white_count = rook_on_seventh_black_count = 0;
 
-        doubled_pawn_mg = doubled_pawn_eg = 0.0; doubled_pawn_count = 0;
-        isolated_pawn_mg = isolated_pawn_eg = 0.0; isolated_pawn_count = 0;
-        backward_pawn_mg = backward_pawn_eg = 0.0; backward_pawn_count = 0;
+        doubled_pawn_white_mg = doubled_pawn_white_eg = doubled_pawn_black_mg = doubled_pawn_black_eg = 0.0;
+        doubled_pawn_white_count = doubled_pawn_black_count = 0;
+        isolated_pawn_white_mg = isolated_pawn_white_eg = isolated_pawn_black_mg = isolated_pawn_black_eg = 0.0;
+        isolated_pawn_white_count = isolated_pawn_black_count = 0;
+        backward_pawn_white_mg = backward_pawn_white_eg = backward_pawn_black_mg = backward_pawn_black_eg = 0.0;
+        backward_pawn_white_count = backward_pawn_black_count = 0;
 
         for (int i = 0; i < 8; ++i) {
-            passed_pawn_mg[i] = passed_pawn_eg[i] = 0.0;
-            passed_pawn_counts[i] = 0;
+            passed_pawn_white_mg[i] = passed_pawn_white_eg[i] = 0.0;
+            passed_pawn_black_mg[i] = passed_pawn_black_eg[i] = 0.0;
+            passed_pawn_white_counts[i] = passed_pawn_black_counts[i] = 0;
         }
-        protected_passer_mg = protected_passer_eg = 0.0; protected_passer_count = 0;
-        connected_passer_mg = connected_passer_eg = 0.0; connected_passer_count = 0;
+        protected_passer_white_mg = protected_passer_white_eg = protected_passer_black_mg = protected_passer_black_eg = 0.0;
+        protected_passer_white_count = protected_passer_black_count = 0;
+        connected_passer_white_mg = connected_passer_white_eg = connected_passer_black_mg = connected_passer_black_eg = 0.0;
+        connected_passer_white_count = connected_passer_black_count = 0;
 
         space_center_mg = space_center_eg = 0.0; space_center_count = 0;
         space_extended_mg = space_extended_eg = 0.0; space_extended_count = 0;
@@ -1035,14 +1056,14 @@ void gradient_descent_step(EvalParams& params, const std::vector<TrainingPositio
         double grad_mg = base_grad * pos.phase;
         double grad_eg = base_grad * (1.0 - pos.phase);
 
-        // PST gradients
+        // PST gradients - track white and black separately to avoid cancellation
         for (int piece = 0; piece < 6; ++piece) {
             Bitboard white_bb = pos.pieces[0][piece];
             while (white_bb) {
                 int sq = lsb_index(white_bb);
-                grad.pst_mg[piece][sq] += grad_mg;
-                grad.pst_eg[piece][sq] += grad_eg;
-                grad.pst_counts[piece][sq]++;
+                grad.pst_white_mg[piece][sq] += grad_mg;
+                grad.pst_white_eg[piece][sq] += grad_eg;
+                grad.pst_white_counts[piece][sq]++;
                 white_bb &= white_bb - 1;
             }
 
@@ -1050,198 +1071,338 @@ void gradient_descent_step(EvalParams& params, const std::vector<TrainingPositio
             while (black_bb) {
                 int sq = lsb_index(black_bb);
                 int flipped_sq = sq ^ 56;
-                grad.pst_mg[piece][flipped_sq] -= grad_mg;
-                grad.pst_eg[piece][flipped_sq] -= grad_eg;
-                grad.pst_counts[piece][flipped_sq]++;
+                // Black contributes positive gradient (we want param to decrease when black wins)
+                // The sign difference is handled in the update step
+                grad.pst_black_mg[piece][flipped_sq] += grad_mg;
+                grad.pst_black_eg[piece][flipped_sq] += grad_eg;
+                grad.pst_black_counts[piece][flipped_sq]++;
                 black_bb &= black_bb - 1;
             }
         }
 
-        // Mobility gradients
-        for (int c = 0; c < 2; ++c) {
-            int sign = (c == 0) ? 1 : -1;
-
-            for (int i = 0; i < pos.num_knights[c]; ++i) {
-                int mob = pos.knight_mob[c][i];
-                grad.mobility_knight_mg[mob] += sign * grad_mg;
-                grad.mobility_knight_eg[mob] += sign * grad_eg;
-                grad.mobility_knight_counts[mob]++;
-            }
-
-            for (int i = 0; i < pos.num_bishops[c]; ++i) {
-                int mob = pos.bishop_mob[c][i];
-                grad.mobility_bishop_mg[mob] += sign * grad_mg;
-                grad.mobility_bishop_eg[mob] += sign * grad_eg;
-                grad.mobility_bishop_counts[mob]++;
-            }
-
-            for (int i = 0; i < pos.num_rooks[c]; ++i) {
-                int mob = pos.rook_mob[c][i];
-                grad.mobility_rook_mg[mob] += sign * grad_mg;
-                grad.mobility_rook_eg[mob] += sign * grad_eg;
-                grad.mobility_rook_counts[mob]++;
-            }
-
-            for (int i = 0; i < pos.num_queens[c]; ++i) {
-                int mob = pos.queen_mob[c][i];
-                grad.mobility_queen_mg[mob] += sign * grad_mg;
-                grad.mobility_queen_eg[mob] += sign * grad_eg;
-                grad.mobility_queen_counts[mob]++;
-            }
+        // Mobility gradients - track white and black separately
+        // White pieces
+        for (int i = 0; i < pos.num_knights[0]; ++i) {
+            int mob = pos.knight_mob[0][i];
+            grad.mobility_knight_white_mg[mob] += grad_mg;
+            grad.mobility_knight_white_eg[mob] += grad_eg;
+            grad.mobility_knight_white_counts[mob]++;
+        }
+        for (int i = 0; i < pos.num_bishops[0]; ++i) {
+            int mob = pos.bishop_mob[0][i];
+            grad.mobility_bishop_white_mg[mob] += grad_mg;
+            grad.mobility_bishop_white_eg[mob] += grad_eg;
+            grad.mobility_bishop_white_counts[mob]++;
+        }
+        for (int i = 0; i < pos.num_rooks[0]; ++i) {
+            int mob = pos.rook_mob[0][i];
+            grad.mobility_rook_white_mg[mob] += grad_mg;
+            grad.mobility_rook_white_eg[mob] += grad_eg;
+            grad.mobility_rook_white_counts[mob]++;
+        }
+        for (int i = 0; i < pos.num_queens[0]; ++i) {
+            int mob = pos.queen_mob[0][i];
+            grad.mobility_queen_white_mg[mob] += grad_mg;
+            grad.mobility_queen_white_eg[mob] += grad_eg;
+            grad.mobility_queen_white_counts[mob]++;
         }
 
-        // Positional gradients
-        {
-            for (int c = 0; c < 2; ++c) {
-                int sign = (c == 0) ? 1 : -1;
-
-                if (pos.has_bishop_pair[c]) {
-                    grad.bishop_pair_mg += sign * grad_mg;
-                    grad.bishop_pair_eg += sign * grad_eg;
-                    grad.bishop_pair_count++;
-                }
-
-                if (pos.rooks_open_file[c] > 0) {
-                    grad.rook_open_file_mg += sign * pos.rooks_open_file[c] * grad_mg;
-                    grad.rook_open_file_eg += sign * pos.rooks_open_file[c] * grad_eg;
-                    grad.rook_open_file_count += pos.rooks_open_file[c];
-                }
-
-                if (pos.rooks_semi_open[c] > 0) {
-                    grad.rook_semi_open_file_mg += sign * pos.rooks_semi_open[c] * grad_mg;
-                    grad.rook_semi_open_file_eg += sign * pos.rooks_semi_open[c] * grad_eg;
-                    grad.rook_semi_open_file_count += pos.rooks_semi_open[c];
-                }
-
-                if (pos.rooks_on_seventh[c] > 0) {
-                    grad.rook_on_seventh_mg += sign * pos.rooks_on_seventh[c] * grad_mg;
-                    grad.rook_on_seventh_eg += sign * pos.rooks_on_seventh[c] * grad_eg;
-                    grad.rook_on_seventh_count += pos.rooks_on_seventh[c];
-                }
-            }
-
-            // Space and king safety
-            if (pos.center_control_diff != 0) {
-                grad.space_center_mg += pos.center_control_diff * grad_mg;
-                grad.space_center_eg += pos.center_control_diff * grad_eg;
-                grad.space_center_count += std::abs(pos.center_control_diff);
-            }
-
-            if (pos.extended_center_diff != 0) {
-                grad.space_extended_mg += pos.extended_center_diff * grad_mg;
-                grad.space_extended_eg += pos.extended_center_diff * grad_eg;
-                grad.space_extended_count += std::abs(pos.extended_center_diff);
-            }
-
-            if (pos.king_attack_diff != 0) {
-                grad.king_attack_mg += pos.king_attack_diff * grad_mg;
-                grad.king_attack_eg += pos.king_attack_diff * grad_eg;
-                grad.king_attack_count += std::abs(pos.king_attack_diff);
-            }
+        // Black pieces
+        for (int i = 0; i < pos.num_knights[1]; ++i) {
+            int mob = pos.knight_mob[1][i];
+            grad.mobility_knight_black_mg[mob] += grad_mg;
+            grad.mobility_knight_black_eg[mob] += grad_eg;
+            grad.mobility_knight_black_counts[mob]++;
+        }
+        for (int i = 0; i < pos.num_bishops[1]; ++i) {
+            int mob = pos.bishop_mob[1][i];
+            grad.mobility_bishop_black_mg[mob] += grad_mg;
+            grad.mobility_bishop_black_eg[mob] += grad_eg;
+            grad.mobility_bishop_black_counts[mob]++;
+        }
+        for (int i = 0; i < pos.num_rooks[1]; ++i) {
+            int mob = pos.rook_mob[1][i];
+            grad.mobility_rook_black_mg[mob] += grad_mg;
+            grad.mobility_rook_black_eg[mob] += grad_eg;
+            grad.mobility_rook_black_counts[mob]++;
+        }
+        for (int i = 0; i < pos.num_queens[1]; ++i) {
+            int mob = pos.queen_mob[1][i];
+            grad.mobility_queen_black_mg[mob] += grad_mg;
+            grad.mobility_queen_black_eg[mob] += grad_eg;
+            grad.mobility_queen_black_counts[mob]++;
         }
 
-        // Pawn structure gradients
-        for (int c = 0; c < 2; ++c) {
-            int sign = (c == 0) ? 1 : -1;
+        // Positional gradients - track white and black separately
+        // White positional features
+        if (pos.has_bishop_pair[0]) {
+            grad.bishop_pair_white_mg += grad_mg;
+            grad.bishop_pair_white_eg += grad_eg;
+            grad.bishop_pair_white_count++;
+        }
+        if (pos.rooks_open_file[0] > 0) {
+            grad.rook_open_file_white_mg += pos.rooks_open_file[0] * grad_mg;
+            grad.rook_open_file_white_eg += pos.rooks_open_file[0] * grad_eg;
+            grad.rook_open_file_white_count += pos.rooks_open_file[0];
+        }
+        if (pos.rooks_semi_open[0] > 0) {
+            grad.rook_semi_open_file_white_mg += pos.rooks_semi_open[0] * grad_mg;
+            grad.rook_semi_open_file_white_eg += pos.rooks_semi_open[0] * grad_eg;
+            grad.rook_semi_open_file_white_count += pos.rooks_semi_open[0];
+        }
+        if (pos.rooks_on_seventh[0] > 0) {
+            grad.rook_on_seventh_white_mg += pos.rooks_on_seventh[0] * grad_mg;
+            grad.rook_on_seventh_white_eg += pos.rooks_on_seventh[0] * grad_eg;
+            grad.rook_on_seventh_white_count += pos.rooks_on_seventh[0];
+        }
 
-            if (pos.doubled_pawns[c] > 0) {
-                grad.doubled_pawn_mg += sign * pos.doubled_pawns[c] * grad_mg;
-                grad.doubled_pawn_eg += sign * pos.doubled_pawns[c] * grad_eg;
-                grad.doubled_pawn_count += pos.doubled_pawns[c];
-            }
+        // Black positional features
+        if (pos.has_bishop_pair[1]) {
+            grad.bishop_pair_black_mg += grad_mg;
+            grad.bishop_pair_black_eg += grad_eg;
+            grad.bishop_pair_black_count++;
+        }
+        if (pos.rooks_open_file[1] > 0) {
+            grad.rook_open_file_black_mg += pos.rooks_open_file[1] * grad_mg;
+            grad.rook_open_file_black_eg += pos.rooks_open_file[1] * grad_eg;
+            grad.rook_open_file_black_count += pos.rooks_open_file[1];
+        }
+        if (pos.rooks_semi_open[1] > 0) {
+            grad.rook_semi_open_file_black_mg += pos.rooks_semi_open[1] * grad_mg;
+            grad.rook_semi_open_file_black_eg += pos.rooks_semi_open[1] * grad_eg;
+            grad.rook_semi_open_file_black_count += pos.rooks_semi_open[1];
+        }
+        if (pos.rooks_on_seventh[1] > 0) {
+            grad.rook_on_seventh_black_mg += pos.rooks_on_seventh[1] * grad_mg;
+            grad.rook_on_seventh_black_eg += pos.rooks_on_seventh[1] * grad_eg;
+            grad.rook_on_seventh_black_count += pos.rooks_on_seventh[1];
+        }
 
-            if (pos.isolated_pawns[c] > 0) {
-                grad.isolated_pawn_mg += sign * pos.isolated_pawns[c] * grad_mg;
-                grad.isolated_pawn_eg += sign * pos.isolated_pawns[c] * grad_eg;
-                grad.isolated_pawn_count += pos.isolated_pawns[c];
-            }
+        // Space and king safety (already use differences, no need for separate tracking)
+        if (pos.center_control_diff != 0) {
+            grad.space_center_mg += pos.center_control_diff * grad_mg;
+            grad.space_center_eg += pos.center_control_diff * grad_eg;
+            grad.space_center_count += std::abs(pos.center_control_diff);
+        }
+        if (pos.extended_center_diff != 0) {
+            grad.space_extended_mg += pos.extended_center_diff * grad_mg;
+            grad.space_extended_eg += pos.extended_center_diff * grad_eg;
+            grad.space_extended_count += std::abs(pos.extended_center_diff);
+        }
+        if (pos.king_attack_diff != 0) {
+            grad.king_attack_mg += pos.king_attack_diff * grad_mg;
+            grad.king_attack_eg += pos.king_attack_diff * grad_eg;
+            grad.king_attack_count += std::abs(pos.king_attack_diff);
+        }
 
-            if (pos.backward_pawns[c] > 0) {
-                grad.backward_pawn_mg += sign * pos.backward_pawns[c] * grad_mg;
-                grad.backward_pawn_eg += sign * pos.backward_pawns[c] * grad_eg;
-                grad.backward_pawn_count += pos.backward_pawns[c];
+        // Pawn structure gradients - track white and black separately
+        // White pawn structure
+        if (pos.doubled_pawns[0] > 0) {
+            grad.doubled_pawn_white_mg += pos.doubled_pawns[0] * grad_mg;
+            grad.doubled_pawn_white_eg += pos.doubled_pawns[0] * grad_eg;
+            grad.doubled_pawn_white_count += pos.doubled_pawns[0];
+        }
+        if (pos.isolated_pawns[0] > 0) {
+            grad.isolated_pawn_white_mg += pos.isolated_pawns[0] * grad_mg;
+            grad.isolated_pawn_white_eg += pos.isolated_pawns[0] * grad_eg;
+            grad.isolated_pawn_white_count += pos.isolated_pawns[0];
+        }
+        if (pos.backward_pawns[0] > 0) {
+            grad.backward_pawn_white_mg += pos.backward_pawns[0] * grad_mg;
+            grad.backward_pawn_white_eg += pos.backward_pawns[0] * grad_eg;
+            grad.backward_pawn_white_count += pos.backward_pawns[0];
+        }
+        for (int r = 0; r < 8; ++r) {
+            if (pos.passed_pawn_by_rank[0][r] > 0) {
+                grad.passed_pawn_white_mg[r] += pos.passed_pawn_by_rank[0][r] * grad_mg;
+                grad.passed_pawn_white_eg[r] += pos.passed_pawn_by_rank[0][r] * grad_eg;
+                grad.passed_pawn_white_counts[r] += pos.passed_pawn_by_rank[0][r];
             }
+        }
+        if (pos.protected_passers[0] > 0) {
+            grad.protected_passer_white_mg += pos.protected_passers[0] * grad_mg;
+            grad.protected_passer_white_eg += pos.protected_passers[0] * grad_eg;
+            grad.protected_passer_white_count += pos.protected_passers[0];
+        }
+        if (pos.connected_passers[0] > 0) {
+            grad.connected_passer_white_mg += pos.connected_passers[0] * grad_mg;
+            grad.connected_passer_white_eg += pos.connected_passers[0] * grad_eg;
+            grad.connected_passer_white_count += pos.connected_passers[0];
+        }
 
-            for (int r = 0; r < 8; ++r) {
-                if (pos.passed_pawn_by_rank[c][r] > 0) {
-                    grad.passed_pawn_mg[r] += sign * pos.passed_pawn_by_rank[c][r] * grad_mg;
-                    grad.passed_pawn_eg[r] += sign * pos.passed_pawn_by_rank[c][r] * grad_eg;
-                    grad.passed_pawn_counts[r] += pos.passed_pawn_by_rank[c][r];
-                }
+        // Black pawn structure
+        if (pos.doubled_pawns[1] > 0) {
+            grad.doubled_pawn_black_mg += pos.doubled_pawns[1] * grad_mg;
+            grad.doubled_pawn_black_eg += pos.doubled_pawns[1] * grad_eg;
+            grad.doubled_pawn_black_count += pos.doubled_pawns[1];
+        }
+        if (pos.isolated_pawns[1] > 0) {
+            grad.isolated_pawn_black_mg += pos.isolated_pawns[1] * grad_mg;
+            grad.isolated_pawn_black_eg += pos.isolated_pawns[1] * grad_eg;
+            grad.isolated_pawn_black_count += pos.isolated_pawns[1];
+        }
+        if (pos.backward_pawns[1] > 0) {
+            grad.backward_pawn_black_mg += pos.backward_pawns[1] * grad_mg;
+            grad.backward_pawn_black_eg += pos.backward_pawns[1] * grad_eg;
+            grad.backward_pawn_black_count += pos.backward_pawns[1];
+        }
+        for (int r = 0; r < 8; ++r) {
+            if (pos.passed_pawn_by_rank[1][r] > 0) {
+                grad.passed_pawn_black_mg[r] += pos.passed_pawn_by_rank[1][r] * grad_mg;
+                grad.passed_pawn_black_eg[r] += pos.passed_pawn_by_rank[1][r] * grad_eg;
+                grad.passed_pawn_black_counts[r] += pos.passed_pawn_by_rank[1][r];
             }
-
-            if (pos.protected_passers[c] > 0) {
-                grad.protected_passer_mg += sign * pos.protected_passers[c] * grad_mg;
-                grad.protected_passer_eg += sign * pos.protected_passers[c] * grad_eg;
-                grad.protected_passer_count += pos.protected_passers[c];
-            }
-
-            if (pos.connected_passers[c] > 0) {
-                grad.connected_passer_mg += sign * pos.connected_passers[c] * grad_mg;
-                grad.connected_passer_eg += sign * pos.connected_passers[c] * grad_eg;
-                grad.connected_passer_count += pos.connected_passers[c];
-            }
+        }
+        if (pos.protected_passers[1] > 0) {
+            grad.protected_passer_black_mg += pos.protected_passers[1] * grad_mg;
+            grad.protected_passer_black_eg += pos.protected_passers[1] * grad_eg;
+            grad.protected_passer_black_count += pos.protected_passers[1];
+        }
+        if (pos.connected_passers[1] > 0) {
+            grad.connected_passer_black_mg += pos.connected_passers[1] * grad_mg;
+            grad.connected_passer_black_eg += pos.connected_passers[1] * grad_eg;
+            grad.connected_passer_black_count += pos.connected_passers[1];
         }
     }
 
-    // Apply gradients
+    // Apply gradients - combine white and black properly
+    // Formula: combined_grad = white_avg - black_avg
+    // This handles asymmetric piece frequencies correctly
     double lr = cfg.learning_rate;
 
-    // PST
+    // Helper lambda to compute combined gradient from white/black
+    auto combine_grad = [](double white_grad, int white_count, double black_grad, int black_count) -> double {
+        double white_avg = (white_count > 0) ? white_grad / white_count : 0.0;
+        double black_avg = (black_count > 0) ? black_grad / black_count : 0.0;
+        return white_avg - black_avg;
+    };
+
+    // PST - combine white and black gradients
     for (int piece = 0; piece < 6; ++piece) {
         for (int sq = 0; sq < 64; ++sq) {
-            if (grad.pst_counts[piece][sq] > 0) {
-                double avg_mg = grad.pst_mg[piece][sq] / grad.pst_counts[piece][sq];
-                double avg_eg = grad.pst_eg[piece][sq] / grad.pst_counts[piece][sq];
-                params.pst_mg[piece][sq] -= lr * avg_mg;
-                params.pst_eg[piece][sq] -= lr * avg_eg;
+            int total_count = grad.pst_white_counts[piece][sq] + grad.pst_black_counts[piece][sq];
+            if (total_count > 0) {
+                double combined_mg = combine_grad(
+                    grad.pst_white_mg[piece][sq], grad.pst_white_counts[piece][sq],
+                    grad.pst_black_mg[piece][sq], grad.pst_black_counts[piece][sq]);
+                double combined_eg = combine_grad(
+                    grad.pst_white_eg[piece][sq], grad.pst_white_counts[piece][sq],
+                    grad.pst_black_eg[piece][sq], grad.pst_black_counts[piece][sq]);
+                params.pst_mg[piece][sq] -= lr * combined_mg;
+                params.pst_eg[piece][sq] -= lr * combined_eg;
             }
         }
     }
 
-    // Mobility
+    // Mobility - combine white and black gradients
     for (int i = 0; i < 9; ++i) {
-        if (grad.mobility_knight_counts[i] > 0) {
-            params.mobility_knight_mg[i] -= lr * grad.mobility_knight_mg[i] / grad.mobility_knight_counts[i];
-            params.mobility_knight_eg[i] -= lr * grad.mobility_knight_eg[i] / grad.mobility_knight_counts[i];
+        int total = grad.mobility_knight_white_counts[i] + grad.mobility_knight_black_counts[i];
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.mobility_knight_white_mg[i], grad.mobility_knight_white_counts[i],
+                grad.mobility_knight_black_mg[i], grad.mobility_knight_black_counts[i]);
+            double combined_eg = combine_grad(
+                grad.mobility_knight_white_eg[i], grad.mobility_knight_white_counts[i],
+                grad.mobility_knight_black_eg[i], grad.mobility_knight_black_counts[i]);
+            params.mobility_knight_mg[i] -= lr * combined_mg;
+            params.mobility_knight_eg[i] -= lr * combined_eg;
         }
     }
     for (int i = 0; i < 14; ++i) {
-        if (grad.mobility_bishop_counts[i] > 0) {
-            params.mobility_bishop_mg[i] -= lr * grad.mobility_bishop_mg[i] / grad.mobility_bishop_counts[i];
-            params.mobility_bishop_eg[i] -= lr * grad.mobility_bishop_eg[i] / grad.mobility_bishop_counts[i];
+        int total = grad.mobility_bishop_white_counts[i] + grad.mobility_bishop_black_counts[i];
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.mobility_bishop_white_mg[i], grad.mobility_bishop_white_counts[i],
+                grad.mobility_bishop_black_mg[i], grad.mobility_bishop_black_counts[i]);
+            double combined_eg = combine_grad(
+                grad.mobility_bishop_white_eg[i], grad.mobility_bishop_white_counts[i],
+                grad.mobility_bishop_black_eg[i], grad.mobility_bishop_black_counts[i]);
+            params.mobility_bishop_mg[i] -= lr * combined_mg;
+            params.mobility_bishop_eg[i] -= lr * combined_eg;
         }
     }
     for (int i = 0; i < 15; ++i) {
-        if (grad.mobility_rook_counts[i] > 0) {
-            params.mobility_rook_mg[i] -= lr * grad.mobility_rook_mg[i] / grad.mobility_rook_counts[i];
-            params.mobility_rook_eg[i] -= lr * grad.mobility_rook_eg[i] / grad.mobility_rook_counts[i];
+        int total = grad.mobility_rook_white_counts[i] + grad.mobility_rook_black_counts[i];
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.mobility_rook_white_mg[i], grad.mobility_rook_white_counts[i],
+                grad.mobility_rook_black_mg[i], grad.mobility_rook_black_counts[i]);
+            double combined_eg = combine_grad(
+                grad.mobility_rook_white_eg[i], grad.mobility_rook_white_counts[i],
+                grad.mobility_rook_black_eg[i], grad.mobility_rook_black_counts[i]);
+            params.mobility_rook_mg[i] -= lr * combined_mg;
+            params.mobility_rook_eg[i] -= lr * combined_eg;
         }
     }
     for (int i = 0; i < 28; ++i) {
-        if (grad.mobility_queen_counts[i] > 0) {
-            params.mobility_queen_mg[i] -= lr * grad.mobility_queen_mg[i] / grad.mobility_queen_counts[i];
-            params.mobility_queen_eg[i] -= lr * grad.mobility_queen_eg[i] / grad.mobility_queen_counts[i];
+        int total = grad.mobility_queen_white_counts[i] + grad.mobility_queen_black_counts[i];
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.mobility_queen_white_mg[i], grad.mobility_queen_white_counts[i],
+                grad.mobility_queen_black_mg[i], grad.mobility_queen_black_counts[i]);
+            double combined_eg = combine_grad(
+                grad.mobility_queen_white_eg[i], grad.mobility_queen_white_counts[i],
+                grad.mobility_queen_black_eg[i], grad.mobility_queen_black_counts[i]);
+            params.mobility_queen_mg[i] -= lr * combined_mg;
+            params.mobility_queen_eg[i] -= lr * combined_eg;
         }
     }
 
-    // Positional
-    if (grad.bishop_pair_count > 0) {
-        params.bishop_pair_mg -= lr * grad.bishop_pair_mg / grad.bishop_pair_count;
-        params.bishop_pair_eg -= lr * grad.bishop_pair_eg / grad.bishop_pair_count;
+    // Positional - combine white and black gradients
+    {
+        int total = grad.bishop_pair_white_count + grad.bishop_pair_black_count;
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.bishop_pair_white_mg, grad.bishop_pair_white_count,
+                grad.bishop_pair_black_mg, grad.bishop_pair_black_count);
+            double combined_eg = combine_grad(
+                grad.bishop_pair_white_eg, grad.bishop_pair_white_count,
+                grad.bishop_pair_black_eg, grad.bishop_pair_black_count);
+            params.bishop_pair_mg -= lr * combined_mg;
+            params.bishop_pair_eg -= lr * combined_eg;
+        }
     }
-    if (grad.rook_open_file_count > 0) {
-        params.rook_open_file_mg -= lr * grad.rook_open_file_mg / grad.rook_open_file_count;
-        params.rook_open_file_eg -= lr * grad.rook_open_file_eg / grad.rook_open_file_count;
+    {
+        int total = grad.rook_open_file_white_count + grad.rook_open_file_black_count;
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.rook_open_file_white_mg, grad.rook_open_file_white_count,
+                grad.rook_open_file_black_mg, grad.rook_open_file_black_count);
+            double combined_eg = combine_grad(
+                grad.rook_open_file_white_eg, grad.rook_open_file_white_count,
+                grad.rook_open_file_black_eg, grad.rook_open_file_black_count);
+            params.rook_open_file_mg -= lr * combined_mg;
+            params.rook_open_file_eg -= lr * combined_eg;
+        }
     }
-    if (grad.rook_semi_open_file_count > 0) {
-        params.rook_semi_open_file_mg -= lr * grad.rook_semi_open_file_mg / grad.rook_semi_open_file_count;
-        params.rook_semi_open_file_eg -= lr * grad.rook_semi_open_file_eg / grad.rook_semi_open_file_count;
+    {
+        int total = grad.rook_semi_open_file_white_count + grad.rook_semi_open_file_black_count;
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.rook_semi_open_file_white_mg, grad.rook_semi_open_file_white_count,
+                grad.rook_semi_open_file_black_mg, grad.rook_semi_open_file_black_count);
+            double combined_eg = combine_grad(
+                grad.rook_semi_open_file_white_eg, grad.rook_semi_open_file_white_count,
+                grad.rook_semi_open_file_black_eg, grad.rook_semi_open_file_black_count);
+            params.rook_semi_open_file_mg -= lr * combined_mg;
+            params.rook_semi_open_file_eg -= lr * combined_eg;
+        }
     }
-    if (grad.rook_on_seventh_count > 0) {
-        params.rook_on_seventh_mg -= lr * grad.rook_on_seventh_mg / grad.rook_on_seventh_count;
-        params.rook_on_seventh_eg -= lr * grad.rook_on_seventh_eg / grad.rook_on_seventh_count;
+    {
+        int total = grad.rook_on_seventh_white_count + grad.rook_on_seventh_black_count;
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.rook_on_seventh_white_mg, grad.rook_on_seventh_white_count,
+                grad.rook_on_seventh_black_mg, grad.rook_on_seventh_black_count);
+            double combined_eg = combine_grad(
+                grad.rook_on_seventh_white_eg, grad.rook_on_seventh_white_count,
+                grad.rook_on_seventh_black_eg, grad.rook_on_seventh_black_count);
+            params.rook_on_seventh_mg -= lr * combined_mg;
+            params.rook_on_seventh_eg -= lr * combined_eg;
+        }
     }
+
+    // Space and king safety (already use differences, so no need for white/black split)
     if (grad.space_center_count > 0) {
         params.space_center_mg -= lr * grad.space_center_mg / grad.space_center_count;
         params.space_center_eg -= lr * grad.space_center_eg / grad.space_center_count;
@@ -1255,32 +1416,84 @@ void gradient_descent_step(EvalParams& params, const std::vector<TrainingPositio
         params.king_attack_eg -= lr * grad.king_attack_eg / grad.king_attack_count;
     }
 
-    // Pawn structure
-    if (grad.doubled_pawn_count > 0) {
-        params.doubled_pawn_mg -= lr * grad.doubled_pawn_mg / grad.doubled_pawn_count;
-        params.doubled_pawn_eg -= lr * grad.doubled_pawn_eg / grad.doubled_pawn_count;
-    }
-    if (grad.isolated_pawn_count > 0) {
-        params.isolated_pawn_mg -= lr * grad.isolated_pawn_mg / grad.isolated_pawn_count;
-        params.isolated_pawn_eg -= lr * grad.isolated_pawn_eg / grad.isolated_pawn_count;
-    }
-    if (grad.backward_pawn_count > 0) {
-        params.backward_pawn_mg -= lr * grad.backward_pawn_mg / grad.backward_pawn_count;
-        params.backward_pawn_eg -= lr * grad.backward_pawn_eg / grad.backward_pawn_count;
-    }
-    for (int r = 0; r < 8; ++r) {
-        if (grad.passed_pawn_counts[r] > 0) {
-            params.passed_pawn_mg[r] -= lr * grad.passed_pawn_mg[r] / grad.passed_pawn_counts[r];
-            params.passed_pawn_eg[r] -= lr * grad.passed_pawn_eg[r] / grad.passed_pawn_counts[r];
+    // Pawn structure - combine white and black gradients
+    {
+        int total = grad.doubled_pawn_white_count + grad.doubled_pawn_black_count;
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.doubled_pawn_white_mg, grad.doubled_pawn_white_count,
+                grad.doubled_pawn_black_mg, grad.doubled_pawn_black_count);
+            double combined_eg = combine_grad(
+                grad.doubled_pawn_white_eg, grad.doubled_pawn_white_count,
+                grad.doubled_pawn_black_eg, grad.doubled_pawn_black_count);
+            params.doubled_pawn_mg -= lr * combined_mg;
+            params.doubled_pawn_eg -= lr * combined_eg;
         }
     }
-    if (grad.protected_passer_count > 0) {
-        params.protected_passer_mg -= lr * grad.protected_passer_mg / grad.protected_passer_count;
-        params.protected_passer_eg -= lr * grad.protected_passer_eg / grad.protected_passer_count;
+    {
+        int total = grad.isolated_pawn_white_count + grad.isolated_pawn_black_count;
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.isolated_pawn_white_mg, grad.isolated_pawn_white_count,
+                grad.isolated_pawn_black_mg, grad.isolated_pawn_black_count);
+            double combined_eg = combine_grad(
+                grad.isolated_pawn_white_eg, grad.isolated_pawn_white_count,
+                grad.isolated_pawn_black_eg, grad.isolated_pawn_black_count);
+            params.isolated_pawn_mg -= lr * combined_mg;
+            params.isolated_pawn_eg -= lr * combined_eg;
+        }
     }
-    if (grad.connected_passer_count > 0) {
-        params.connected_passer_mg -= lr * grad.connected_passer_mg / grad.connected_passer_count;
-        params.connected_passer_eg -= lr * grad.connected_passer_eg / grad.connected_passer_count;
+    {
+        int total = grad.backward_pawn_white_count + grad.backward_pawn_black_count;
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.backward_pawn_white_mg, grad.backward_pawn_white_count,
+                grad.backward_pawn_black_mg, grad.backward_pawn_black_count);
+            double combined_eg = combine_grad(
+                grad.backward_pawn_white_eg, grad.backward_pawn_white_count,
+                grad.backward_pawn_black_eg, grad.backward_pawn_black_count);
+            params.backward_pawn_mg -= lr * combined_mg;
+            params.backward_pawn_eg -= lr * combined_eg;
+        }
+    }
+    for (int r = 0; r < 8; ++r) {
+        int total = grad.passed_pawn_white_counts[r] + grad.passed_pawn_black_counts[r];
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.passed_pawn_white_mg[r], grad.passed_pawn_white_counts[r],
+                grad.passed_pawn_black_mg[r], grad.passed_pawn_black_counts[r]);
+            double combined_eg = combine_grad(
+                grad.passed_pawn_white_eg[r], grad.passed_pawn_white_counts[r],
+                grad.passed_pawn_black_eg[r], grad.passed_pawn_black_counts[r]);
+            params.passed_pawn_mg[r] -= lr * combined_mg;
+            params.passed_pawn_eg[r] -= lr * combined_eg;
+        }
+    }
+    {
+        int total = grad.protected_passer_white_count + grad.protected_passer_black_count;
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.protected_passer_white_mg, grad.protected_passer_white_count,
+                grad.protected_passer_black_mg, grad.protected_passer_black_count);
+            double combined_eg = combine_grad(
+                grad.protected_passer_white_eg, grad.protected_passer_white_count,
+                grad.protected_passer_black_eg, grad.protected_passer_black_count);
+            params.protected_passer_mg -= lr * combined_mg;
+            params.protected_passer_eg -= lr * combined_eg;
+        }
+    }
+    {
+        int total = grad.connected_passer_white_count + grad.connected_passer_black_count;
+        if (total > 0) {
+            double combined_mg = combine_grad(
+                grad.connected_passer_white_mg, grad.connected_passer_white_count,
+                grad.connected_passer_black_mg, grad.connected_passer_black_count);
+            double combined_eg = combine_grad(
+                grad.connected_passer_white_eg, grad.connected_passer_white_count,
+                grad.connected_passer_black_eg, grad.connected_passer_black_count);
+            params.connected_passer_mg -= lr * combined_mg;
+            params.connected_passer_eg -= lr * combined_eg;
+        }
     }
 }
 
