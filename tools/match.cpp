@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <poll.h>
+#include <csignal>
 
 // ============================================================================
 // Debug logging
@@ -112,6 +113,20 @@ void log_msg(const std::string& msg) {
 #include <ftxui/screen/terminal.hpp>
 
 using namespace ftxui;
+
+// ============================================================================
+// Signal handling globals
+// ============================================================================
+static std::atomic<bool>* g_all_done = nullptr;
+static std::atomic<bool>* g_screen_exiting = nullptr;
+static ScreenInteractive* g_screen = nullptr;
+
+void signal_handler(int sig) {
+    (void)sig;  // Unused
+    if (g_all_done) g_all_done->store(true);
+    if (g_screen_exiting) g_screen_exiting->store(true);
+    if (g_screen) g_screen->Exit();
+}
 
 // UCI Engine wrapper - manages subprocess communication
 class Engine {
@@ -248,16 +263,22 @@ public:
 
     ~Engine() {
         // IMPORTANT: Destructors must never throw exceptions
-        // Signal stderr reader to stop
+        // 1. Signal stderr reader to stop and wait for it first
+        //    (must join before closing fds to avoid read-after-close)
         stopping.store(true);
+        if (stderr_thread.joinable()) {
+            stderr_thread.join();
+        }
 
+        // 2. Try graceful shutdown
         if (to_engine) {
-            // Try to send quit gracefully, ignore any errors
             fprintf(to_engine, "quit\n");
             fflush(to_engine);
             fclose(to_engine);
             to_engine = nullptr;
         }
+
+        // 3. Close read fds
         if (from_engine_fd >= 0) {
             close(from_engine_fd);
             from_engine_fd = -1;
@@ -266,14 +287,21 @@ public:
             close(stderr_fd);
             stderr_fd = -1;
         }
-        // Wait for stderr reader thread to finish
-        if (stderr_thread.joinable()) {
-            stderr_thread.join();
-        }
-        // Reap the child process to avoid zombies
+
+        // 4. Wait for child with timeout, then force kill if needed
         if (child_pid > 0) {
             int status;
-            waitpid(child_pid, &status, 0);
+            // Try non-blocking wait first
+            pid_t result = waitpid(child_pid, &status, WNOHANG);
+            if (result == 0) {
+                // Child still running, give it 100ms then SIGKILL
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                result = waitpid(child_pid, &status, WNOHANG);
+                if (result == 0) {
+                    kill(child_pid, SIGKILL);
+                    waitpid(child_pid, &status, 0);
+                }
+            }
         }
     }
 
@@ -992,7 +1020,8 @@ void worker_thread(
     GameStateManager& state,
     ScreenInteractive& screen,
     std::atomic<bool>& fatal_error,
-    std::atomic<bool>& all_done
+    std::atomic<bool>& all_done,
+    std::atomic<bool>& screen_exiting
 ) {
     log_msg("Worker[" + std::to_string(thread_id) + "] started");
 
@@ -1053,7 +1082,8 @@ void worker_thread(
                 // Game-level error (e.g., engine crashed mid-game)
                 // Mark as loss for the side whose engine crashed, but we can't tell which
                 // So mark as draw and continue
-                console_msg("Game " + std::to_string(task.game_id) + " error: " + e.what());
+                console_msg("Game " + std::to_string(task.game_id + 1) + " error: " + e.what());
+                log_msg("Worker[" + std::to_string(thread_id) + "] game error, exiting: " + e.what());
 
                 GameOutcome outcome;
                 outcome.result = GameResult::Draw;
@@ -1070,15 +1100,18 @@ void worker_thread(
                 results.add(std::move(report));
 
                 // Engine crashed, can't continue with this thread's engines
-                // Exit the loop to restart engines
+                // Exit the loop - engines are broken
                 break;
             }
         }
     } catch (const std::exception& e) {
         // Thread-level error (e.g., engine failed to start)
         console_msg("Thread " + std::to_string(thread_id) + " fatal error: " + e.what());
+        log_msg("Worker[" + std::to_string(thread_id) + "] fatal error: " + e.what());
         fatal_error.store(true);
-        screen.Exit();
+        screen_exiting.store(true);
+        // Post exit request to main thread (screen.Exit() is not thread-safe)
+        screen.Post([&] { screen.Exit(); });
     }
 }
 
@@ -1104,6 +1137,9 @@ void print_usage(const char* prog) {
 
 int main(int argc, char* argv[]) {
     zobrist::init();
+
+    // Ignore SIGPIPE - writing to a pipe after child dies would otherwise crash us
+    std::signal(SIGPIPE, SIG_IGN);
 
     if (argc < 3) {
         print_usage(argv[0]);
@@ -1223,6 +1259,7 @@ int main(int argc, char* argv[]) {
     // Shared flags for thread coordination
     std::atomic<bool> fatal_error{false};
     std::atomic<bool> all_done{false};
+    std::atomic<bool> screen_exiting{false};  // Prevents posting to screen after exit initiated
 
     // Main UI component
     auto main_component = Renderer([&] {
@@ -1373,7 +1410,8 @@ int main(int argc, char* argv[]) {
         if (num_games == 0) num_games = total_games;
 
         if (event == Event::Character('q') || event == Event::Escape) {
-            all_done.store(true);  // Signal refresh thread to exit
+            screen_exiting.store(true);  // Prevent refresh thread from posting
+            all_done.store(true);
             screen.Exit();
             return true;
         }
@@ -1492,7 +1530,7 @@ int main(int argc, char* argv[]) {
             if (!fatal_error.load() && !all_done.load()) {
                 worker_thread(i, engine1_path, engine2_path,
                              movetime_ms, hash_mb, work_queue, results,
-                             state, screen, fatal_error, all_done);
+                             state, screen, fatal_error, all_done, screen_exiting);
             }
             log_msg("Thread[" + std::to_string(i) + "] exiting");
         });
@@ -1504,22 +1542,20 @@ int main(int argc, char* argv[]) {
         log_msg("Refresh thread started");
         while (!all_done.load() && !fatal_error.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            // Double-check before posting to avoid race with screen exit
-            if (!all_done.load() && !fatal_error.load()) {
+            // Check screen_exiting to avoid posting after Exit() is called
+            if (!screen_exiting.load()) {
                 screen.Post(Event::Custom);
             }
         }
         log_msg("Refresh thread exiting");
     });
 
-    // Monitor thread - just waits for exit signal (no longer auto-exits when games complete)
-    std::thread monitor([&] {
-        log_msg("Monitor thread started");
-        while (!all_done.load() && !fatal_error.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
-        log_msg("Monitor thread exiting");
-    });
+    // Set up signal handlers for graceful shutdown
+    g_all_done = &all_done;
+    g_screen_exiting = &screen_exiting;
+    g_screen = &screen;
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
 
     // Signal that screen is ready via Post (runs after loop starts)
     log_msg("Main: calling screen.Post to set screen_ready");
@@ -1531,12 +1567,14 @@ int main(int argc, char* argv[]) {
     screen.Loop(main_component);
     log_msg("Main: screen.Loop() returned");
 
+    // Clear signal handlers (screen is no longer valid)
+    g_screen = nullptr;
+
     // Wait for all threads to complete
     for (auto& t : threads) {
         t.join();
     }
     refresh_thread.join();
-    monitor.join();
 
     auto end_time = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
