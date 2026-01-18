@@ -36,9 +36,10 @@ public:
 
     // Probe the TT. Returns true if entry can be used for cutoff.
     // Always sets best_move if entry exists (for move ordering).
-    bool probe(u64 hash, int depth, int alpha, int beta, int& score, Move32& best_move);
+    // ply is needed to adjust mate scores to be ply-independent.
+    bool probe(u64 hash, int depth, int ply, int alpha, int beta, int& score, Move32& best_move);
 
-    void store(u64 hash, int depth, int score, TTFlag flag, Move32 best_move);
+    void store(u64 hash, int depth, int ply, int score, TTFlag flag, Move32 best_move);
     void clear();
     void reset_stats();
 

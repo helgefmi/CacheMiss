@@ -1,6 +1,11 @@
 #include "ttable.hpp"
 #include <bit>
 
+// Mate score constants for ply adjustment
+// These must match the values in search.cpp
+constexpr int MATE_SCORE = 29000;
+constexpr int MAX_PLY = 64;
+
 TTable::TTable(size_t mb) {
     size_t bytes = mb * 1024 * 1024;
     size_t count = bytes / sizeof(TTEntry);
@@ -11,7 +16,7 @@ TTable::TTable(size_t mb) {
     clear();
 }
 
-bool TTable::probe(u64 hash, int depth, int alpha, int beta, int& score, Move32& best_move) {
+bool TTable::probe(u64 hash, int depth, int ply, int alpha, int beta, int& score, Move32& best_move) {
     const TTEntry& entry = table[hash & mask];
 
     if (entry.hash != hash) {
@@ -31,6 +36,17 @@ bool TTable::probe(u64 hash, int depth, int alpha, int beta, int& score, Move32&
 
     score = entry.score;
 
+    // Adjust mate scores from ply-independent (stored) to absolute (current ply)
+    // Winning mate scores (we're mating): stored = MATE_SCORE - distance_to_mate
+    // Convert back: score = stored - ply (to get MATE_SCORE - current_ply - distance)
+    // Losing mate scores (we're being mated): stored = -MATE_SCORE + distance_to_mate
+    // Convert back: score = stored + ply
+    if (score > MATE_SCORE - MAX_PLY) {
+        score = score - ply;
+    } else if (score < -MATE_SCORE + MAX_PLY) {
+        score = score + ply;
+    }
+
     if (entry.flag == TT_EXACT) {
         return true;
     }
@@ -44,7 +60,7 @@ bool TTable::probe(u64 hash, int depth, int alpha, int beta, int& score, Move32&
     return false;
 }
 
-void TTable::store(u64 hash, int depth, int score, TTFlag flag, Move32 best_move) {
+void TTable::store(u64 hash, int depth, int ply, int score, TTFlag flag, Move32 best_move) {
     TTEntry& entry = table[hash & mask];
 
     stats.stores++;
@@ -68,8 +84,18 @@ void TTable::store(u64 hash, int depth, int score, TTFlag flag, Move32 best_move
         stats.overwrites++;
     }
 
+    // Adjust mate scores to ply-independent form for storage
+    // Winning mate (score > MATE_SCORE - MAX_PLY): add ply to store distance from root
+    // Losing mate (score < -MATE_SCORE + MAX_PLY): subtract ply to store distance from root
+    int adjusted_score = score;
+    if (score > MATE_SCORE - MAX_PLY) {
+        adjusted_score = score + ply;
+    } else if (score < -MATE_SCORE + MAX_PLY) {
+        adjusted_score = score - ply;
+    }
+
     entry.hash = hash;
-    entry.score = static_cast<s16>(score);
+    entry.score = static_cast<s16>(adjusted_score);
     entry.depth = static_cast<u8>(depth);
     entry.flag = flag;
     entry.generation = current_generation;

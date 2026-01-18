@@ -711,12 +711,12 @@ static bool test_ttable_store_probe() {
     Move32 move(12, 28);  // e2e4
 
     // Store an exact score
-    tt.store(board.hash, 5, 100, TT_EXACT, move);
+    tt.store(board.hash, 5, 0, 100, TT_EXACT, move);
 
     // Probe should succeed with same depth
     int score;
     Move32 best_move;
-    bool hit = tt.probe(board.hash, 5, -10000, 10000, score, best_move);
+    bool hit = tt.probe(board.hash, 5, 0, -10000, 10000, score, best_move);
 
     if (!hit) return false;
     if (score != 100) return false;
@@ -733,12 +733,12 @@ static bool test_ttable_depth_check() {
     Move32 move(12, 28);
 
     // Store at depth 3
-    tt.store(board.hash, 3, 100, TT_EXACT, move);
+    tt.store(board.hash, 3, 0, 100, TT_EXACT, move);
 
     // Probe at depth 5 should fail (stored depth too shallow)
     int score;
     Move32 best_move;
-    bool hit = tt.probe(board.hash, 5, -10000, 10000, score, best_move);
+    bool hit = tt.probe(board.hash, 5, 0, -10000, 10000, score, best_move);
 
     return !hit;  // Should NOT hit because depth is insufficient
 }
@@ -751,12 +751,12 @@ static bool test_ttable_returns_best_move() {
     Move32 move(12, 28);
 
     // Store at depth 3
-    tt.store(board.hash, 3, 100, TT_EXACT, move);
+    tt.store(board.hash, 3, 0, 100, TT_EXACT, move);
 
     // Probe at depth 5 - should fail for cutoff but still get best_move
     int score;
     Move32 best_move;
-    tt.probe(board.hash, 5, -10000, 10000, score, best_move);
+    tt.probe(board.hash, 5, 0, -10000, 10000, score, best_move);
 
     // best_move should still be set (for move ordering)
     return best_move.same_move(move);

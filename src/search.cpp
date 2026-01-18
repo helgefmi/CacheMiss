@@ -409,7 +409,7 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     // TT probe
     int tt_score;
     Move32 tt_move(0);
-    bool tt_hit = ctx.tt.probe(ctx.board.hash, depth, alpha, beta, tt_score, tt_move);
+    bool tt_hit = ctx.tt.probe(ctx.board.hash, depth, ply, alpha, beta, tt_score, tt_move);
     // Don't take TT cutoffs at root (we need to find the actual best move)
     if (tt_hit && !is_pv_node && !is_root) {
         return tt_score;
@@ -553,7 +553,7 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
         if (score >= beta) {
             ctx.update_killer(ply, move);
             ctx.update_history(ctx.board.turn, move, depth);
-            ctx.tt.store(ctx.board.hash, depth, beta, TT_LOWER, move);
+            ctx.tt.store(ctx.board.hash, depth, ply, beta, TT_LOWER, move);
             return beta;
         }
 
@@ -569,7 +569,7 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     }
 
     TTFlag flag = found_pv ? TT_EXACT : TT_UPPER;
-    ctx.tt.store(ctx.board.hash, depth, best_score, flag, best_move);
+    ctx.tt.store(ctx.board.hash, depth, ply, best_score, flag, best_move);
 
     return best_score;
 }
