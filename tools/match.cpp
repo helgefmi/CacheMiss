@@ -23,6 +23,7 @@
 #include <sys/wait.h>
 #include <poll.h>
 #include <csignal>
+#include <fcntl.h>
 
 // ============================================================================
 // Debug logging
@@ -115,18 +116,45 @@ void log_msg(const std::string& msg) {
 using namespace ftxui;
 
 // ============================================================================
-// Signal handling globals
+// Signal handling globals - uses self-pipe pattern for async-signal-safety
 // ============================================================================
-static std::atomic<bool>* g_all_done = nullptr;
-static std::atomic<bool>* g_screen_exiting = nullptr;
-static ScreenInteractive* g_screen = nullptr;
+static int g_signal_pipe[2] = {-1, -1};
 
 void signal_handler(int sig) {
-    (void)sig;  // Unused
-    if (g_all_done) g_all_done->store(true);
-    if (g_screen_exiting) g_screen_exiting->store(true);
-    if (g_screen) g_screen->Exit();
+    // Only async-signal-safe operations: write single byte to pipe
+    // This is safe because write() to a pipe is async-signal-safe
+    char c = (char)sig;
+    (void)write(g_signal_pipe[1], &c, 1);  // Ignore errors - best effort
 }
+
+// Initialize the signal pipe - call before setting up signal handlers
+bool init_signal_pipe() {
+    if (pipe(g_signal_pipe) < 0) {
+        return false;
+    }
+    // Set write end to non-blocking so signal handler never blocks
+    int flags = fcntl(g_signal_pipe[1], F_GETFL, 0);
+    fcntl(g_signal_pipe[1], F_SETFL, flags | O_NONBLOCK);
+    return true;
+}
+
+void close_signal_pipe() {
+    if (g_signal_pipe[0] >= 0) {
+        close(g_signal_pipe[0]);
+        g_signal_pipe[0] = -1;
+    }
+    if (g_signal_pipe[1] >= 0) {
+        close(g_signal_pipe[1]);
+        g_signal_pipe[1] = -1;
+    }
+}
+
+// Move result with stats (declared before Engine class so it can be used as return type)
+struct MoveResult {
+    std::string bestmove;
+    int depth = 0;
+    u64 nodes = 0;
+};
 
 // UCI Engine wrapper - manages subprocess communication
 class Engine {
@@ -255,10 +283,10 @@ public:
         log_msg("Engine[" + std::to_string(instance_id) + "] READY");
     }
 
-    void set_hash(int mb) {
+    void set_hash(int mb, std::atomic<bool>* stop_flag = nullptr) {
         send("setoption name Hash value " + std::to_string(mb));
         send("isready");
-        wait_for("readyok");
+        wait_for("readyok", 10000, stop_flag);
     }
 
     ~Engine() {
@@ -323,7 +351,7 @@ public:
         }
     }
 
-    std::string read_line(int timeout_ms = 30000) {
+    std::string read_line(int timeout_ms = 30000, std::atomic<bool>* stop_flag = nullptr) {
         // Check if we already have a complete line in the buffer
         size_t newline_pos = read_buffer.find('\n');
         if (newline_pos != std::string::npos) {
@@ -336,6 +364,12 @@ public:
         // Need to read more data
         auto start_time = std::chrono::steady_clock::now();
         while (true) {
+            // Check stop flag before each poll - enables responsive shutdown
+            if (stop_flag && stop_flag->load(std::memory_order_acquire)) {
+                log_msg(log_prefix() + " read interrupted by stop signal");
+                throw std::runtime_error("Read interrupted by stop signal");
+            }
+
             // Calculate remaining timeout
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start_time).count();
@@ -349,13 +383,18 @@ public:
             pfd.fd = from_engine_fd;
             pfd.events = POLLIN;
 
-            int ret = poll(&pfd, 1, remaining_ms);
+            // Use short poll timeout (100ms) to check stop flag frequently
+            int poll_timeout = std::min(100, remaining_ms);
+            int ret = poll(&pfd, 1, poll_timeout);
             if (ret < 0) {
+                if (errno == EINTR) {
+                    continue;  // Interrupted by signal, retry
+                }
                 log_msg(log_prefix() + " poll FAILED: " + strerror(errno));
                 throw std::runtime_error("poll() failed for engine " + path + ": " + strerror(errno));
             }
             if (ret == 0) {
-                continue;  // Timeout, but check remaining time
+                continue;  // Poll timeout, check stop flag and remaining time
             }
 
             // Check for errors
@@ -374,6 +413,9 @@ public:
             char buf[4096];
             ssize_t n = read(from_engine_fd, buf, sizeof(buf));
             if (n < 0) {
+                if (errno == EINTR) {
+                    continue;  // Interrupted by signal, retry
+                }
                 log_msg(log_prefix() + " read FAILED: " + strerror(errno));
                 throw std::runtime_error("read() failed for engine " + path + ": " + strerror(errno));
             }
@@ -396,16 +438,27 @@ public:
         }
     }
 
-    void wait_for(const std::string& expected) {
+    void wait_for(const std::string& expected, int timeout_ms = 10000,
+                  std::atomic<bool>* stop_flag = nullptr) {
+        auto start_time = std::chrono::steady_clock::now();
         while (true) {
-            std::string line = read_line();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start_time).count();
+            int remaining_ms = timeout_ms - static_cast<int>(elapsed);
+            if (remaining_ms <= 0) {
+                log_msg(log_prefix() + " TIMEOUT waiting for '" + expected + "'");
+                throw std::runtime_error("Timeout waiting for '" + expected + "' from engine " + path);
+            }
+
+            std::string line = read_line(remaining_ms, stop_flag);
             if (line.find(expected) == 0) {
                 break;
             }
         }
     }
 
-    std::string get_bestmove(const std::string& position, const std::vector<std::string>& moves, int movetime_ms) {
+    MoveResult get_bestmove(const std::string& position, const std::vector<std::string>& moves,
+                            int movetime_ms, std::atomic<bool>* stop_flag = nullptr) {
         std::string cmd = "position fen " + position;
         if (!moves.empty()) {
             cmd += " moves";
@@ -416,28 +469,50 @@ public:
         send(cmd);
 
         send("isready");
-        wait_for("readyok");
+        wait_for("readyok", 10000, stop_flag);
 
         send("go movetime " + std::to_string(movetime_ms));
+
+        MoveResult result;
 
         // Wait for bestmove with generous timeout (movetime + 10 seconds buffer)
         int timeout = movetime_ms + 10000;
         while (true) {
-            std::string line = read_line(timeout);
+            std::string line = read_line(timeout, stop_flag);
+
+            // Parse UCI info lines for depth and nodes
+            if (line.find("info") == 0) {
+                std::istringstream iss(line);
+                std::string token;
+                while (iss >> token) {
+                    if (token == "depth") {
+                        int d;
+                        if (iss >> d) {
+                            result.depth = d;
+                        }
+                    } else if (token == "nodes") {
+                        u64 n;
+                        if (iss >> n) {
+                            result.nodes = n;
+                        }
+                    }
+                }
+            }
+
             if (line.find("bestmove") == 0) {
                 // Parse "bestmove e2e4 ..."
                 std::istringstream iss(line);
-                std::string token, bestmove;
-                iss >> token >> bestmove;
-                return bestmove;
+                std::string token;
+                iss >> token >> result.bestmove;
+                return result;
             }
         }
     }
 
-    void new_game() {
+    void new_game(std::atomic<bool>* stop_flag = nullptr) {
         send("ucinewgame");
         send("isready");
-        wait_for("readyok");
+        wait_for("readyok", 10000, stop_flag);
     }
 
     const std::string& get_path() const { return path; }
@@ -454,6 +529,12 @@ struct GameOutcome {
     DrawReason draw_reason;
     int num_moves;
     std::string final_fen;
+    u64 white_depth = 0;     // Cumulative depth for white's moves
+    u64 black_depth = 0;     // Cumulative depth for black's moves
+    u64 white_nodes = 0;     // Cumulative nodes for white's moves
+    u64 black_nodes = 0;     // Cumulative nodes for black's moves
+    u64 white_moves = 0;     // Number of moves made by white
+    u64 black_moves = 0;     // Number of moves made by black
 };
 
 // Check for insufficient material
@@ -531,19 +612,27 @@ using GameUpdateCallback = std::function<void(int game_id, const std::string& fe
 // Play a single game between two engines (with optional TUI updates)
 GameOutcome play_game(Engine& white, Engine& black, const std::string& start_fen, int movetime_ms,
                       const std::string& white_name, const std::string& black_name,
-                      GameUpdateCallback on_move = nullptr) {
+                      GameUpdateCallback on_move = nullptr,
+                      std::atomic<bool>* stop_flag = nullptr) {
     Board board(start_fen);
     std::vector<std::string> move_history;
     std::vector<u64> position_hashes;
 
-    white.new_game();
-    black.new_game();
+    white.new_game(stop_flag);
+    black.new_game(stop_flag);
 
     GameOutcome outcome;
     outcome.num_moves = 0;
     outcome.draw_reason = DrawReason::None;
 
     while (true) {
+        // Check for stop signal at start of each move
+        if (stop_flag && stop_flag->load(std::memory_order_acquire)) {
+            // Abort game cleanly
+            outcome.result = GameResult::Draw;
+            outcome.draw_reason = DrawReason::None;
+            break;
+        }
         // Check for 50-move rule
         if (board.halfmove_clock >= 100) {
             outcome.result = GameResult::Draw;
@@ -598,7 +687,19 @@ GameOutcome play_game(Engine& white, Engine& black, const std::string& start_fen
 
         // Get move from current player
         Engine& current = (board.turn == ::Color::White) ? white : black;
-        std::string uci_move = current.get_bestmove(start_fen, move_history, movetime_ms);
+        MoveResult move_result = current.get_bestmove(start_fen, move_history, movetime_ms, stop_flag);
+        std::string uci_move = move_result.bestmove;
+
+        // Track depth/nodes per color
+        if (board.turn == ::Color::White) {
+            outcome.white_depth += move_result.depth;
+            outcome.white_nodes += move_result.nodes;
+            outcome.white_moves++;
+        } else {
+            outcome.black_depth += move_result.depth;
+            outcome.black_nodes += move_result.nodes;
+            outcome.black_moves++;
+        }
 
         // Validate move format (should be 4-5 chars: e2e4 or e7e8q)
         if (uci_move.length() < 4 || uci_move.length() > 5) {
@@ -704,6 +805,12 @@ class ResultsCollector {
     std::atomic<int> wins1{0};
     std::atomic<int> wins2{0};
     std::atomic<int> draws{0};
+    std::atomic<u64> total_depth1{0};
+    std::atomic<u64> total_depth2{0};
+    std::atomic<u64> total_nodes1{0};
+    std::atomic<u64> total_nodes2{0};
+    std::atomic<u64> total_moves1{0};
+    std::atomic<u64> total_moves2{0};
     int total_games;
 
 public:
@@ -723,6 +830,23 @@ public:
                 break;
         }
 
+        // Update depth/nodes stats - map white/black to engine1/engine2
+        if (report.engine1_is_white) {
+            total_depth1.fetch_add(report.outcome.white_depth);
+            total_depth2.fetch_add(report.outcome.black_depth);
+            total_nodes1.fetch_add(report.outcome.white_nodes);
+            total_nodes2.fetch_add(report.outcome.black_nodes);
+            total_moves1.fetch_add(report.outcome.white_moves);
+            total_moves2.fetch_add(report.outcome.black_moves);
+        } else {
+            total_depth1.fetch_add(report.outcome.black_depth);
+            total_depth2.fetch_add(report.outcome.white_depth);
+            total_nodes1.fetch_add(report.outcome.black_nodes);
+            total_nodes2.fetch_add(report.outcome.white_nodes);
+            total_moves1.fetch_add(report.outcome.black_moves);
+            total_moves2.fetch_add(report.outcome.white_moves);
+        }
+
         std::lock_guard<std::mutex> lock(mtx);
         results.push_back(std::move(report));
         completed++;
@@ -733,6 +857,12 @@ public:
     int get_wins1() const { return wins1.load(); }
     int get_wins2() const { return wins2.load(); }
     int get_draws() const { return draws.load(); }
+    u64 get_total_depth1() const { return total_depth1.load(); }
+    u64 get_total_depth2() const { return total_depth2.load(); }
+    u64 get_total_nodes1() const { return total_nodes1.load(); }
+    u64 get_total_nodes2() const { return total_nodes2.load(); }
+    u64 get_total_moves1() const { return total_moves1.load(); }
+    u64 get_total_moves2() const { return total_moves2.load(); }
 
     std::vector<GameReport> get_results() {
         std::lock_guard<std::mutex> lock(mtx);
@@ -842,6 +972,26 @@ public:
         return (int)games.size();
     }
 };
+
+// ============================================================================
+// TUI: Helper functions
+// ============================================================================
+
+// Format large numbers with K/M/G suffixes
+std::string format_nodes(u64 n) {
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(1);
+    if (n >= 1000000000ULL) {
+        ss << (n / 1000000000.0) << "G";
+    } else if (n >= 1000000ULL) {
+        ss << (n / 1000000.0) << "M";
+    } else if (n >= 1000ULL) {
+        ss << (n / 1000.0) << "K";
+    } else {
+        ss << n;
+    }
+    return ss.str();
+}
 
 // ============================================================================
 // TUI: Rendering functions
@@ -1042,8 +1192,8 @@ void worker_thread(
         // Configure hash table size
         if (hash_mb > 0) {
             log_msg("Worker[" + std::to_string(thread_id) + "] setting hash to " + std::to_string(hash_mb) + "MB");
-            engine1.set_hash(hash_mb);
-            engine2.set_hash(hash_mb);
+            engine1.set_hash(hash_mb, &all_done);
+            engine2.set_hash(hash_mb, &all_done);
         }
 
         GameTask task;
@@ -1065,7 +1215,7 @@ void worker_thread(
             };
 
             try {
-                GameOutcome outcome = play_game(white, black, task.fen, movetime_ms, white_name, black_name, on_move);
+                GameOutcome outcome = play_game(white, black, task.fen, movetime_ms, white_name, black_name, on_move, &all_done);
 
                 // Mark game as finished in TUI state
                 // Note: UI refresh is handled by dedicated refresh thread
@@ -1278,6 +1428,21 @@ int main(int argc, char* argv[]) {
                   << "  |  " << finished << "/" << total_games
                   << " [W:" << w1 << " D:" << d << " L:" << w2
                   << " = " << std::fixed << std::setprecision(1) << pct << "%]";
+
+        // Add depth and nodes stats
+        u64 moves1 = results.get_total_moves1();
+        u64 moves2 = results.get_total_moves2();
+        u64 depth1 = results.get_total_depth1();
+        u64 depth2 = results.get_total_depth2();
+        u64 nodes1 = results.get_total_nodes1();
+        u64 nodes2 = results.get_total_nodes2();
+
+        if (moves1 > 0 || moves2 > 0) {
+            double avg_d1 = (moves1 > 0) ? (double)depth1 / moves1 : 0;
+            double avg_d2 = (moves2 > 0) ? (double)depth2 / moves2 : 0;
+            header_ss << " | D:" << std::setprecision(1) << avg_d1 << "/" << avg_d2
+                      << " N:" << format_nodes(nodes1) << "/" << format_nodes(nodes2);
+        }
 
         bool all_complete = (finished >= total_games);
         if (all_complete) {
@@ -1550,10 +1715,46 @@ int main(int argc, char* argv[]) {
         log_msg("Refresh thread exiting");
     });
 
+    // Initialize signal pipe for async-signal-safe shutdown
+    if (!init_signal_pipe()) {
+        std::cerr << "Failed to create signal pipe" << std::endl;
+        fatal_error.store(true);
+        all_done.store(true);
+        for (auto& t : threads) {
+            t.join();
+        }
+        refresh_thread.join();
+        log_close();
+        return 1;
+    }
+
+    // Signal watcher thread - polls the signal pipe and safely exits the screen
+    // This avoids calling non-async-signal-safe FTXUI code from the signal handler
+    std::thread signal_watcher_thread([&] {
+        log_msg("Signal watcher thread started");
+        struct pollfd pfd;
+        pfd.fd = g_signal_pipe[0];
+        pfd.events = POLLIN;
+
+        while (!all_done.load()) {
+            int ret = poll(&pfd, 1, 100);  // 100ms timeout
+            if (ret > 0 && (pfd.revents & POLLIN)) {
+                char sig;
+                if (read(g_signal_pipe[0], &sig, 1) == 1) {
+                    log_msg("Signal watcher: received signal " + std::to_string((int)sig));
+                    // Set flags with proper memory ordering
+                    all_done.store(true, std::memory_order_release);
+                    screen_exiting.store(true, std::memory_order_release);
+                    // Post exit to screen from non-signal context (safe)
+                    screen.Post([&] { screen.Exit(); });
+                    break;
+                }
+            }
+        }
+        log_msg("Signal watcher thread exiting");
+    });
+
     // Set up signal handlers for graceful shutdown
-    g_all_done = &all_done;
-    g_screen_exiting = &screen_exiting;
-    g_screen = &screen;
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
@@ -1567,8 +1768,18 @@ int main(int argc, char* argv[]) {
     screen.Loop(main_component);
     log_msg("Main: screen.Loop() returned");
 
-    // Clear signal handlers (screen is no longer valid)
-    g_screen = nullptr;
+    // Reset signal handlers to default (screen is no longer valid)
+    std::signal(SIGINT, SIG_DFL);
+    std::signal(SIGTERM, SIG_DFL);
+
+    // Ensure all_done is set so threads can exit
+    all_done.store(true, std::memory_order_release);
+
+    // Wait for signal watcher thread
+    signal_watcher_thread.join();
+
+    // Close signal pipe
+    close_signal_pipe();
 
     // Wait for all threads to complete
     for (auto& t : threads) {
@@ -1626,6 +1837,27 @@ int main(int argc, char* argv[]) {
               << " (" << pct1 << "%) [W:" << wins1 << " D:" << draws << " L:" << wins2 << "]" << std::endl;
     std::cout << "  " << engine2_path << ": " << score2 << "/" << total_games
               << " (" << pct2 << "%) [W:" << wins2 << " D:" << draws << " L:" << wins1 << "]" << std::endl;
+
+    // Print search statistics
+    u64 moves1 = results.get_total_moves1();
+    u64 moves2 = results.get_total_moves2();
+    u64 depth1 = results.get_total_depth1();
+    u64 depth2 = results.get_total_depth2();
+    u64 nodes1 = results.get_total_nodes1();
+    u64 nodes2 = results.get_total_nodes2();
+
+    if (moves1 > 0 || moves2 > 0) {
+        std::cout << "\nSearch Statistics:" << std::endl;
+        double avg_d1 = (moves1 > 0) ? (double)depth1 / moves1 : 0;
+        double avg_d2 = (moves2 > 0) ? (double)depth2 / moves2 : 0;
+        std::cout << std::fixed << std::setprecision(1);
+        std::cout << "  " << engine1_short << ": avg depth " << avg_d1
+                  << ", total nodes " << format_nodes(nodes1)
+                  << " (" << moves1 << " moves)" << std::endl;
+        std::cout << "  " << engine2_short << ": avg depth " << avg_d2
+                  << ", total nodes " << format_nodes(nodes2)
+                  << " (" << moves2 << " moves)" << std::endl;
+    }
 
     log_msg("Match finished");
     log_close();
