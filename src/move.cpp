@@ -293,6 +293,16 @@ template MoveList generate_moves<MoveType::Quiet>(const Board&);
 // Castling rook squares
 constexpr int A1 = 0, H1 = 7, A8 = 56, H8 = 63;
 
+// Map king destination to rook from/to squares for castling
+inline std::pair<int, int> get_castling_rook_squares(int king_to) {
+    switch (king_to) {
+        case G1: return {H1, F1};
+        case C1: return {A1, D1};
+        case G8: return {H8, F8};
+        default: return {A8, D8};  // C8
+    }
+}
+
 // Castling rights masks: AND with these to clear rights when piece moves from/to square
 // bit0=wQ, bit1=wK, bit2=bQ, bit3=bK
 constexpr u8 CASTLING_MASK[64] = {
@@ -319,6 +329,7 @@ void make_move(Board& board, Move32& move) {
     // Save undo info
     move.set_undo_info(board.castling, board.ep_file);
     board.hash_stack[board.hash_sp] = board.hash;
+    board.pawn_key_stack[board.hash_sp] = board.pawn_key;
     board.halfmove_stack[board.hash_sp] = board.halfmove_clock;
     board.hash_sp++;
 
@@ -352,6 +363,15 @@ void make_move(Board& board, Move32& move) {
         board.king_sq[(int)turn] = to;
     }
 
+    // Update pawn_key for pawn movements
+    if (piece == Piece::Pawn) {
+        board.pawn_key ^= zobrist::pieces[(int)turn][(int)Piece::Pawn][from];
+        if (promotion == Piece::None) {
+            board.pawn_key ^= zobrist::pieces[(int)turn][(int)Piece::Pawn][to];
+        }
+        // Note: promotions remove the pawn entirely, so no XOR in for to square
+    }
+
     // Handle captures
     if (captured != Piece::None) {
         // Update phase for captured piece
@@ -363,10 +383,14 @@ void make_move(Board& board, Move32& move) {
             board.occupied[(int)enemy] &= ~square_bb(captured_sq);
             board.pieces[(int)enemy][(int)Piece::Pawn] &= ~square_bb(captured_sq);
             h ^= zobrist::pieces[(int)enemy][(int)Piece::Pawn][captured_sq];
+            board.pawn_key ^= zobrist::pieces[(int)enemy][(int)Piece::Pawn][captured_sq];
         } else {
             board.occupied[(int)enemy] &= ~square_bb(to);
             board.pieces[(int)enemy][(int)captured] &= ~square_bb(to);
             h ^= zobrist::pieces[(int)enemy][(int)captured][to];
+            if (captured == Piece::Pawn) {
+                board.pawn_key ^= zobrist::pieces[(int)enemy][(int)Piece::Pawn][to];
+            }
         }
     }
 
@@ -377,11 +401,7 @@ void make_move(Board& board, Move32& move) {
 
     // Handle castling
     if (move.is_castling()) {
-        int rook_from, rook_to;
-        if (to == G1) { rook_from = H1; rook_to = F1; }
-        else if (to == C1) { rook_from = A1; rook_to = D1; }
-        else if (to == G8) { rook_from = H8; rook_to = F8; }
-        else { rook_from = A8; rook_to = D8; }
+        auto [rook_from, rook_to] = get_castling_rook_squares(to);
 
         board.pieces_on_square[rook_to] = Piece::Rook;
         board.pieces_on_square[rook_from] = Piece::None;
@@ -467,11 +487,7 @@ void unmake_move(Board& board, const Move32& move) {
 
     // Undo castling rook move
     if (move.is_castling()) {
-        int rook_from, rook_to;
-        if (to == G1) { rook_from = H1; rook_to = F1; }
-        else if (to == C1) { rook_from = A1; rook_to = D1; }
-        else if (to == G8) { rook_from = H8; rook_to = F8; }
-        else { rook_from = A8; rook_to = D8; }
+        auto [rook_from, rook_to] = get_castling_rook_squares(to);
 
         board.pieces_on_square[rook_from] = Piece::Rook;
         board.pieces_on_square[rook_to] = Piece::None;
@@ -481,10 +497,11 @@ void unmake_move(Board& board, const Move32& move) {
         board.pieces[(int)turn][(int)Piece::Rook] &= ~square_bb(rook_to);
     }
 
-    // Update all_occupied and restore hash/halfmove from stack
+    // Update all_occupied and restore hash/halfmove/pawn_key from stack
     board.all_occupied = board.occupied[0] | board.occupied[1];
     --board.hash_sp;
     board.hash = board.hash_stack[board.hash_sp];
+    board.pawn_key = board.pawn_key_stack[board.hash_sp];
     board.halfmove_clock = board.halfmove_stack[board.hash_sp];
 }
 

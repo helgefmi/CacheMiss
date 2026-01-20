@@ -57,6 +57,7 @@ add_library(cachemiss_core STATIC
     src/move.cpp
     src/zobrist.cpp
     src/eval.cpp
+    src/pawn_cache.cpp
     src/perft.cpp
     src/epd.cpp
     src/ttable.cpp

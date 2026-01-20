@@ -73,6 +73,17 @@ Board::Board(std::string_view fen) {
     // Compute initial Zobrist hash
     hash = compute_hash(*this);
 
+    // Compute pawn-only hash for pawn structure cache
+    pawn_key = 0;
+    for (int c = 0; c < 2; ++c) {
+        Bitboard pawns = pieces[c][(int)Piece::Pawn];
+        while (pawns) {
+            int sq = std::countr_zero(pawns);
+            pawn_key ^= zobrist::pieces[c][(int)Piece::Pawn][sq];
+            pawns &= pawns - 1;
+        }
+    }
+
     // Compute initial phase (Knight=1, Bishop=1, Rook=2, Queen=4, max 24)
     phase = 0;
     for (int c = 0; c < 2; ++c) {

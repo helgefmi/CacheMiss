@@ -5,6 +5,9 @@
 
 #include <algorithm>
 
+// Global pawn structure cache
+PawnCache g_pawn_cache(1);
+
 // Space evaluation zones
 constexpr Bitboard CENTER_4 = 0x0000001818000000ULL;         // d4, d5, e4, e5
 constexpr Bitboard EXTENDED_CENTER = 0x00003C3C3C3C0000ULL;  // c3-f6 region
@@ -286,9 +289,15 @@ int evaluate(const Board& board) {
         }
     }
 
-    // Pawn structure evaluation
-    evaluate_pawn_structure(board, mg_score, eg_score);
-    evaluate_passed_pawns(board, mg_score, eg_score);
+    // Pawn structure evaluation (with cache)
+    int pawn_mg = 0, pawn_eg = 0;
+    if (!g_pawn_cache.probe(board.pawn_key, pawn_mg, pawn_eg)) {
+        evaluate_pawn_structure(board, pawn_mg, pawn_eg);
+        evaluate_passed_pawns(board, pawn_mg, pawn_eg);
+        g_pawn_cache.store(board.pawn_key, pawn_mg, pawn_eg);
+    }
+    mg_score += pawn_mg;
+    eg_score += pawn_eg;
 
     // Space evaluation: control over key zones
     int center_diff = popcount(attacks[0] & CENTER_4) - popcount(attacks[1] & CENTER_4);
