@@ -3,6 +3,13 @@
 #include <array>
 #include <string_view>
 
+// Undo info stored on stack for unmake_move
+struct UndoInfo {
+    u64 hash;
+    u64 pawn_key;
+    u8 halfmove_clock;
+};
+
 struct Board {
     Color turn;
     std::array<std::array<Bitboard, 6>, 2> pieces;  // pieces[Color][Piece]
@@ -16,10 +23,8 @@ struct Board {
     u64 hash;      // Zobrist hash
     u64 pawn_key;  // Zobrist hash of pawn positions only (for pawn structure cache)
     int phase;                                      // Game phase (0=endgame, 24=opening) for tapered eval
-    std::array<u64, 1024> hash_stack;               // Stack for hash restoration in unmake
-    std::array<u64, 1024> pawn_key_stack;           // Stack for pawn_key restoration in unmake
-    std::array<u8, 1024> halfmove_stack;            // Stack for halfmove_clock restoration
-    int hash_sp = 0;                                // Stack pointer
+    std::array<UndoInfo, 1024> undo_stack;          // Stack for restoration in unmake
+    int undo_sp = 0;                                // Stack pointer
 
     Board() : Board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") {}
     Board(std::string_view fen);

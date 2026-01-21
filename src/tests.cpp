@@ -843,8 +843,8 @@ static bool test_repetition_resets_on_capture() {
     apply_move(board, "e6e5");  // Ke5
     if (board.halfmove_clock != 1) return false;
 
-    // hash_sp should be 4 (4 moves made)
-    if (board.hash_sp != 4) return false;
+    // undo_sp should be 4 (4 moves made)
+    if (board.undo_sp != 4) return false;
 
     // Verify board invariants hold
     std::string error;

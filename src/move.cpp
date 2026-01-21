@@ -3,6 +3,7 @@
 #include "precalc.hpp"
 #include "move.hpp"
 #include "zobrist.hpp"
+#include <cassert>
 
 // Check if a square is attacked by the given color (super-piece approach)
 template <Color attacker>
@@ -328,10 +329,9 @@ void make_move(Board& board, Move32& move) {
 
     // Save undo info
     move.set_undo_info(board.castling, board.ep_file);
-    board.hash_stack[board.hash_sp] = board.hash;
-    board.pawn_key_stack[board.hash_sp] = board.pawn_key;
-    board.halfmove_stack[board.hash_sp] = board.halfmove_clock;
-    board.hash_sp++;
+    assert(board.undo_sp < 1024 && "Undo stack overflow");
+    board.undo_stack[board.undo_sp] = {board.hash, board.pawn_key, board.halfmove_clock};
+    board.undo_sp++;
 
     // Update halfmove clock (reset on pawn move or capture, otherwise increment)
     if (piece == Piece::Pawn || captured != Piece::None) {
@@ -499,10 +499,11 @@ void unmake_move(Board& board, const Move32& move) {
 
     // Update all_occupied and restore hash/halfmove/pawn_key from stack
     board.all_occupied = board.occupied[0] | board.occupied[1];
-    --board.hash_sp;
-    board.hash = board.hash_stack[board.hash_sp];
-    board.pawn_key = board.pawn_key_stack[board.hash_sp];
-    board.halfmove_clock = board.halfmove_stack[board.hash_sp];
+    --board.undo_sp;
+    const UndoInfo& undo = board.undo_stack[board.undo_sp];
+    board.hash = undo.hash;
+    board.pawn_key = undo.pawn_key;
+    board.halfmove_clock = undo.halfmove_clock;
 }
 
 void make_null_move(Board& b, int& prev_ep_file) {
@@ -519,13 +520,14 @@ void make_null_move(Board& b, int& prev_ep_file) {
     // Flip turn
     b.turn = opposite(b.turn);
 
-    // Push hash to stack (for repetition detection)
-    b.hash_stack[b.hash_sp++] = b.hash;
+    // Push to stack (for repetition detection)
+    assert(b.undo_sp < 1024 && "Undo stack overflow");
+    b.undo_stack[b.undo_sp++] = {b.hash, b.pawn_key, b.halfmove_clock};
 }
 
 void unmake_null_move(Board& b, int prev_ep_file) {
-    // Pop hash stack
-    --b.hash_sp;
+    // Pop undo stack
+    --b.undo_sp;
 
     // Restore hash
     b.hash ^= zobrist::side_to_move;

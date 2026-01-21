@@ -1,5 +1,6 @@
 #include "search.hpp"
 #include "eval.hpp"
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -294,9 +295,9 @@ static bool in_check(const Board& board) {
 static bool is_repetition(const Board& board) {
     int limit = board.halfmove_clock;
     for (int i = 2; i <= limit; i += 2) {
-        int idx = board.hash_sp - i;
+        int idx = board.undo_sp - i;
         if (idx < 0) break;
-        if (board.hash_stack[idx] == board.hash) {
+        if (board.undo_stack[idx].hash == board.hash) {
             return true;
         }
     }
@@ -329,28 +330,34 @@ static int quiescence(SearchContext& ctx, int alpha, int beta, int ply) {
     MoveList moves = in_chk ? generate_moves(ctx.board)
                             : generate_moves<MoveType::Noisy>(ctx.board);
 
+    // Pre-compute move scores once (avoids O(n^2) recomputation in selection sort)
+    std::array<int, MoveList::MAX_MOVES> scores;
+    for (int i = 0; i < moves.size; ++i) {
+        scores[i] = 0;
+        if (moves[i].is_capture()) {
+            int victim = MVV_LVA_VALUES[(int)moves[i].captured()];
+            int attacker = MVV_LVA_VALUES[(int)ctx.board.pieces_on_square[moves[i].from()]];
+            scores[i] = victim * 10 - attacker;
+        }
+        if (moves[i].is_promotion()) {
+            scores[i] += MVV_LVA_VALUES[(int)moves[i].promotion()];
+        }
+    }
+
     int legal_moves = 0;
 
     for (int i = 0; i < moves.size; ++i) {
-        // Simple selection sort for qsearch (no killer/history needed)
+        // Selection sort using pre-computed scores
         int best_idx = i;
-        int best_score = -INFINITY_SCORE;
-        for (int j = i; j < moves.size; ++j) {
-            int score = 0;
-            if (moves[j].is_capture()) {
-                int victim = MVV_LVA_VALUES[(int)moves[j].captured()];
-                int attacker = MVV_LVA_VALUES[(int)ctx.board.pieces_on_square[moves[j].from()]];
-                score = victim * 10 - attacker;
-            }
-            if (moves[j].is_promotion()) {
-                score += MVV_LVA_VALUES[(int)moves[j].promotion()];
-            }
-            if (score > best_score) {
-                best_score = score;
+        for (int j = i + 1; j < moves.size; ++j) {
+            if (scores[j] > scores[best_idx]) {
                 best_idx = j;
             }
         }
-        if (best_idx != i) std::swap(moves[i], moves[best_idx]);
+        if (best_idx != i) {
+            std::swap(moves[i], moves[best_idx]);
+            std::swap(scores[i], scores[best_idx]);
+        }
 
         Move32& move = moves[i];
 
