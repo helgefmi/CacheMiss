@@ -222,11 +222,30 @@ static void parse_setoption(const std::string& line, size_t& hash_mb, bool& hash
 
 // Output bestmove with optional ponder move
 // Acquires result_mutex to safely read last_result
-static void output_bestmove() {
+// Validates ponder move is legal in position after best_move
+static void output_bestmove(const Board& board) {
     std::lock_guard<std::mutex> lock(result_mutex);
     std::cout << "bestmove " << last_result.best_move.to_uci();
+
     if (last_result.pv_length >= 2) {
-        std::cout << " ponder " << last_result.pv[1].to_uci();
+        // Validate ponder move is legal in position after best_move
+        Board ponder_board = board;
+        make_move(ponder_board, last_result.pv[0]);
+
+        MoveList moves = generate_moves<MoveType::All>(ponder_board);
+        bool ponder_valid = false;
+        for (int i = 0; i < moves.size; ++i) {
+            Board test = ponder_board;
+            make_move(test, moves[i]);
+            if (!is_illegal(test) && moves[i].same_move(last_result.pv[1])) {
+                ponder_valid = true;
+                break;
+            }
+        }
+
+        if (ponder_valid) {
+            std::cout << " ponder " << last_result.pv[1].to_uci();
+        }
     }
     std::cout << std::endl;
 }
@@ -322,7 +341,7 @@ static bool handle_go_command(const std::string& line, Board& board, TTable& tt)
         return true;
     }
 
-    output_bestmove();
+    output_bestmove(board);
     moves_played++;
     return false;
 }

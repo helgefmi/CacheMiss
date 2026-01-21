@@ -3,7 +3,6 @@
 #include "move.hpp"
 #include "perft.hpp"
 #include "search.hpp"
-#include "tests.hpp"
 #include "uci.hpp"
 #include "zobrist.hpp"
 #include <getopt.h>
@@ -20,7 +19,6 @@ void print_usage(const char* prog) {
               << "  --bench-perftsuite <file>[=max_depth]  Run perft test suite\n"
               << "  --bench-wac <file>[=time_ms]  Run WAC test suite (default: 1000ms)\n"
               << "  --wac-id <id>            Filter WAC suite to single position\n"
-              << "  --tests                  Run test suite\n"
               << "  --mem <mb>               Hash table size in MB (default: 512)\n"
               << "  -h, --help               Show this help\n";
 }
@@ -37,7 +35,6 @@ int main(int argc, char* argv[]) {
     std::string wac_file;
     int wac_time_ms = 1000;
     std::string wac_id;
-    bool run_tests = false;
     size_t mem_mb = 512;
 
     enum Opt {
@@ -48,7 +45,6 @@ int main(int argc, char* argv[]) {
         OPT_BENCH_PERFTSUITE = 'P',
         OPT_BENCH_WAC = 'w',
         OPT_WAC_ID = 'i',
-        OPT_TESTS = 'T',
         OPT_MEM = 'm',
         OPT_HELP = 'h',
     };
@@ -61,7 +57,6 @@ int main(int argc, char* argv[]) {
         {"bench-perftsuite", required_argument, nullptr, OPT_BENCH_PERFTSUITE},
         {"bench-wac",       required_argument, nullptr, OPT_BENCH_WAC},
         {"wac-id",          required_argument, nullptr, OPT_WAC_ID},
-        {"tests",           no_argument,       nullptr, OPT_TESTS},
         {"mem",             required_argument, nullptr, OPT_MEM},
         {"help",            no_argument,       nullptr, OPT_HELP},
         {nullptr, 0, nullptr, 0}
@@ -97,9 +92,6 @@ int main(int argc, char* argv[]) {
         case OPT_WAC_ID:
             wac_id = optarg;
             break;
-        case OPT_TESTS:
-            run_tests = true;
-            break;
         case OPT_MEM:
             mem_mb = std::stoul(optarg);
             break;
@@ -120,10 +112,6 @@ int main(int argc, char* argv[]) {
     if (!wac_file.empty()) {
         bench_wac(wac_file, wac_time_ms, mem_mb, wac_id);
         return 0;
-    }
-
-    if (run_tests) {
-        return run_draw_tests(1000, mem_mb);
     }
 
     Board board(fen);

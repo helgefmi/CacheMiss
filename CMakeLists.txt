@@ -70,7 +70,6 @@ add_executable(cachemiss
     src/uci.cpp
     src/search.cpp
     src/bench.cpp
-    src/tests.cpp
 )
 target_link_libraries(cachemiss cachemiss_core)
 
@@ -93,3 +92,20 @@ target_link_libraries(tune_eval cachemiss_core)
 # WAC comparison tool
 add_executable(wac_compare tools/wac_compare.cpp)
 target_link_libraries(wac_compare pthread)
+
+# Test suite
+add_executable(run_tests
+    tests/test_main.cpp
+    tests/test_movegen.cpp
+    tests/test_see.cpp
+    tests/test_eval.cpp
+    tests/test_search.cpp
+    tests/test_hash.cpp
+    tests/test_board.cpp
+    tests/test_perft.cpp
+    tests/test_uci.cpp
+    src/search.cpp
+    src/uci.cpp
+)
+target_link_libraries(run_tests cachemiss_core)
+target_include_directories(run_tests PRIVATE tests)
