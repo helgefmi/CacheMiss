@@ -121,3 +121,6 @@ bool is_attacked(int square, Color attacker, const Board& board);
 
 // Check if the side that just moved left their king in check (illegal move)
 bool is_illegal(const Board& board);
+
+// Static Exchange Evaluation - compute material outcome of capture sequences
+int see(const Board& board, const Move32& move);

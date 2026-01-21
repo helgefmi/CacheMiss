@@ -551,7 +551,7 @@ void print_usage(const char* prog) {
               << "Options:\n"
               << "  -o <file>         Output file (default: stdout)\n"
               << "  -K <value>        Sigmoid scaling factor (default: 400)\n"
-              << "  -lr <value>       Learning rate (default: 10)\n"
+              << "  -lr <value>       Learning rate (default: 300)\n"
               << "  -epochs <n>       Number of epochs (default: 1000)\n"
               << "  -min-elo <n>      Minimum average rating (default: 2200)\n"
               << "  -min-time <s>     Minimum initial time in seconds (default: 180)\n"

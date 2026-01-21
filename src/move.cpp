@@ -4,6 +4,10 @@
 #include "move.hpp"
 #include "zobrist.hpp"
 #include <cassert>
+#include <algorithm>
+
+// SEE piece values (standard centipawn values)
+constexpr int SEE_VALUES[] = { 100, 320, 330, 500, 900, 20000, 0, 0 };
 
 // Check if a square is attacked by the given color (super-piece approach)
 template <Color attacker>
@@ -552,6 +556,98 @@ bool is_illegal(const Board& board) {
     Color them = board.turn;  // Side to move next
     Color us = opposite(them);  // Side that just moved
     return is_attacked(board.king_sq[(int)us], them, board);
+}
+
+// Get all pieces attacking a square (both colors)
+static Bitboard get_all_attackers(int sq, Bitboard occ, const Board& board) {
+    Bitboard bishops = board.pieces[0][(int)Piece::Bishop] | board.pieces[1][(int)Piece::Bishop];
+    Bitboard rooks   = board.pieces[0][(int)Piece::Rook]   | board.pieces[1][(int)Piece::Rook];
+    Bitboard queens  = board.pieces[0][(int)Piece::Queen]  | board.pieces[1][(int)Piece::Queen];
+
+    return (PAWN_ATTACKS[(int)Color::Black][sq] & board.pieces[(int)Color::White][(int)Piece::Pawn])
+         | (PAWN_ATTACKS[(int)Color::White][sq] & board.pieces[(int)Color::Black][(int)Piece::Pawn])
+         | (KNIGHT_MOVES[sq] & (board.pieces[0][(int)Piece::Knight] | board.pieces[1][(int)Piece::Knight]))
+         | (KING_MOVES[sq] & (board.pieces[0][(int)Piece::King] | board.pieces[1][(int)Piece::King]))
+         | (get_bishop_attacks(sq, occ) & (bishops | queens))
+         | (get_rook_attacks(sq, occ) & (rooks | queens));
+}
+
+int see(const Board& board, const Move32& move) {
+    int to_sq = move.to();
+    int from_sq = move.from();
+
+    Piece captured = move.captured();
+    if (captured == Piece::None && !move.is_promotion()) return 0;
+
+    int gain[32];
+    int depth = 0;
+
+    Piece attacker = board.pieces_on_square[from_sq];
+    gain[depth] = SEE_VALUES[(int)captured];
+
+    // Handle promotion: gain includes promotion bonus
+    if (move.is_promotion()) {
+        gain[depth] += SEE_VALUES[(int)move.promotion()] - SEE_VALUES[(int)Piece::Pawn];
+        attacker = move.promotion();
+    }
+
+    Bitboard occ = board.all_occupied ^ square_bb(from_sq);
+
+    // Handle en passant: remove captured pawn from occupancy
+    if (move.is_en_passant()) {
+        int ep_sq = (board.turn == Color::White) ? to_sq - 8 : to_sq + 8;
+        occ ^= square_bb(ep_sq);
+    }
+
+    Bitboard attackers = get_all_attackers(to_sq, occ, board) & occ;
+    Color side = opposite(board.turn);
+
+    while (true) {
+        depth++;
+        gain[depth] = SEE_VALUES[(int)attacker] - gain[depth - 1];
+
+        // Find least valuable attacker for current side
+        Bitboard side_attackers = attackers & board.occupied[(int)side];
+        if (!side_attackers) break;
+
+        // Get LVA (least valuable attacker)
+        Piece lva = Piece::None;
+        int attacker_sq = -1;
+        for (int pt = 0; pt <= 5; pt++) {
+            Bitboard candidates = side_attackers & board.pieces[(int)side][pt];
+            if (candidates) {
+                attacker_sq = lsb_index(candidates);
+                lva = (Piece)pt;
+                break;
+            }
+        }
+        if (lva == Piece::None) break;
+
+        attacker = lva;
+        occ ^= square_bb(attacker_sq);
+
+        // X-ray: discover new slider attackers
+        if (lva == Piece::Pawn || lva == Piece::Bishop || lva == Piece::Queen) {
+            Bitboard diag_sliders = board.pieces[0][(int)Piece::Bishop] | board.pieces[1][(int)Piece::Bishop]
+                                  | board.pieces[0][(int)Piece::Queen]  | board.pieces[1][(int)Piece::Queen];
+            attackers |= get_bishop_attacks(to_sq, occ) & diag_sliders;
+        }
+        if (lva == Piece::Rook || lva == Piece::Queen) {
+            Bitboard orth_sliders = board.pieces[0][(int)Piece::Rook]  | board.pieces[1][(int)Piece::Rook]
+                                  | board.pieces[0][(int)Piece::Queen] | board.pieces[1][(int)Piece::Queen];
+            attackers |= get_rook_attacks(to_sq, occ) & orth_sliders;
+        }
+
+        attackers &= occ;
+        side = opposite(side);
+    }
+
+    // Minimax the gain stack
+    while (--depth) {
+        gain[depth - 1] = -std::max(-gain[depth - 1], gain[depth]);
+    }
+
+    return gain[0];
 }
 
 std::string Move32::to_uci() const {

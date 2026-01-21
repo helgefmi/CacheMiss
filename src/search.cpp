@@ -239,9 +239,17 @@ private:
         int score = 0;
 
         if (move.is_capture()) {
-            int victim_value = MVV_LVA_VALUES[(int)move.captured()];
-            int attacker_value = MVV_LVA_VALUES[(int)ctx.board.pieces_on_square[move.from()]];
-            score += 10000 + victim_value * 10 - attacker_value;
+            int see_value = see(ctx.board, move);
+            if (see_value >= 0) {
+                // Good capture: score 15000+ (above quiets)
+                // Add MVV-LVA tiebreaker within good captures
+                int victim = MVV_LVA_VALUES[(int)move.captured()];
+                int attacker = MVV_LVA_VALUES[(int)ctx.board.pieces_on_square[move.from()]];
+                score = 15000 + victim * 10 - attacker;
+            } else {
+                // Bad capture: negative score (below quiets)
+                score = see_value;
+            }
         }
 
         if (move.is_promotion()) {
@@ -360,6 +368,13 @@ static int quiescence(SearchContext& ctx, int alpha, int beta, int ply) {
         }
 
         Move32& move = moves[i];
+
+        // SEE pruning: skip losing captures (not when in check, not for promotions)
+        if (!in_chk && move.is_capture() && !move.is_promotion()) {
+            if (see(ctx.board, move) < 0) {
+                continue;
+            }
+        }
 
         make_move(ctx.board, move);
 
