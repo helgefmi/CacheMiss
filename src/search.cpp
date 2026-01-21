@@ -177,6 +177,10 @@ struct MovePicker {
     MoveList moves;
     int index;
 
+    // Score cache to avoid O(N²) SEE recomputation
+    std::array<int, MoveList::MAX_MOVES> move_scores;
+    bool scores_computed = false;
+
     MovePicker(SearchContext& ctx, int ply, Move32 tt_move, Move32 prev_best = Move32(0))
         : ctx(ctx), ply(ply), tt_move(tt_move), prev_best(prev_best),
           stage(TT_MOVE), index(0) {}
@@ -210,6 +214,7 @@ struct MovePicker {
             // Generate quiet moves for next stage
             moves = generate_moves<MoveType::Quiet>(ctx.board);
             index = 0;
+            scores_computed = false;  // Reset for new move list
             stage = QUIET;
             [[fallthrough]];
 
@@ -269,20 +274,30 @@ private:
         return score;
     }
 
+    void compute_scores() {
+        if (scores_computed) return;
+        for (int i = 0; i < moves.size; ++i) {
+            move_scores[i] = score_move(moves[i]);
+        }
+        scores_computed = true;
+    }
+
     void pick_best() {
+        compute_scores();
+
         int best_idx = index;
-        int best_score = score_move(moves[index]);
+        int best_score = move_scores[index];
 
         for (int i = index + 1; i < moves.size; ++i) {
-            int score = score_move(moves[i]);
-            if (score > best_score) {
-                best_score = score;
+            if (move_scores[i] > best_score) {
+                best_score = move_scores[i];
                 best_idx = i;
             }
         }
 
         if (best_idx != index) {
             std::swap(moves[index], moves[best_idx]);
+            std::swap(move_scores[index], move_scores[best_idx]);
         }
     }
 };
@@ -338,17 +353,16 @@ static int quiescence(SearchContext& ctx, int alpha, int beta, int ply) {
     MoveList moves = in_chk ? generate_moves(ctx.board)
                             : generate_moves<MoveType::Noisy>(ctx.board);
 
-    // Pre-compute move scores once (avoids O(n^2) recomputation in selection sort)
+    // Pre-compute SEE values for captures (used for both ordering and pruning)
+    // Non-captures get MVV-LVA style ordering based on promotion value
     std::array<int, MoveList::MAX_MOVES> scores;
     for (int i = 0; i < moves.size; ++i) {
-        scores[i] = 0;
         if (moves[i].is_capture()) {
-            int victim = MVV_LVA_VALUES[(int)moves[i].captured()];
-            int attacker = MVV_LVA_VALUES[(int)ctx.board.pieces_on_square[moves[i].from()]];
-            scores[i] = victim * 10 - attacker;
-        }
-        if (moves[i].is_promotion()) {
-            scores[i] += MVV_LVA_VALUES[(int)moves[i].promotion()];
+            // Use SEE for ordering captures (better than MVV-LVA)
+            scores[i] = see(ctx.board, moves[i]);
+        } else {
+            // Non-captures (only promotions in noisy, all quiets when in check)
+            scores[i] = moves[i].is_promotion() ? MVV_LVA_VALUES[(int)moves[i].promotion()] : 0;
         }
     }
 
@@ -370,8 +384,9 @@ static int quiescence(SearchContext& ctx, int alpha, int beta, int ply) {
         Move32& move = moves[i];
 
         // SEE pruning: skip losing captures (not when in check, not for promotions)
+        // Use cached SEE value instead of recomputing
         if (!in_chk && move.is_capture() && !move.is_promotion()) {
-            if (see(ctx.board, move) < 0) {
+            if (scores[i] < 0) {
                 continue;
             }
         }
@@ -487,6 +502,14 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     // At root, also consider prev_best_move for move ordering
     MovePicker picker(ctx, ply, tt_move, is_root ? ctx.prev_best_move : Move32(0));
     while (Move32 move = picker.next()) {
+        // SEE pruning: at shallow depths, skip captures that lose significant material
+        // Don't prune: at root, when in check, promotions (too valuable)
+        if (!is_root && depth <= 2 && !in_chk && move.is_capture() && !move.is_promotion()) {
+            if (see(ctx.board, move) < -100) {  // Losing more than a pawn
+                continue;
+            }
+        }
+
         make_move(ctx.board, move);
 
         if (is_illegal(ctx.board)) {
