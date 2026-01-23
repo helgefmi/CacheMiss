@@ -679,6 +679,11 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
             if (move.data != 0) {
                 result.best_move = move;
                 result.score = score;
+                // Also copy PV to keep it in sync with best_move
+                result.pv_length = ctx.pv_length[0];
+                for (int i = 0; i < ctx.pv_length[0]; ++i) {
+                    result.pv[i] = ctx.pv_table[0][i];
+                }
             }
             break;
         }
