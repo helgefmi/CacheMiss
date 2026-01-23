@@ -6,14 +6,18 @@
 
 enum TTFlag : u8 { TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2 };
 
+// Compact TTEntry: 16 bytes for optimal cache line packing (4 entries per 64-byte line)
+// Hash verification uses upper 32 bits of hash; lower bits are already the table index.
+// Combined with ~25 index bits, this gives ~57 bits of effective hash coverage.
 struct TTEntry {
-    u64 hash;
+    u32 hash_verify;  // Upper 32 bits of full hash for collision detection
     s16 score;
     u8 depth;
-    u8 flag;
-    u8 generation;
+    u8 flags;         // Lower 2 bits: TTFlag, upper 6 bits: generation (wraps at 64)
     Move32 best_move;
+    u32 _padding;     // Pad to 16 bytes for cache line alignment
 };
+static_assert(sizeof(TTEntry) == 16, "TTEntry must be 16 bytes");
 
 struct TTStats {
     u64 hits = 0;       // Probe found matching hash
