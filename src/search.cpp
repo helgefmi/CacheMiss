@@ -423,6 +423,9 @@ static int quiescence(SearchContext& ctx, int alpha, int beta, int ply) {
 }
 
 static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int ply, bool is_pv_node, bool can_null) {
+    // Prefetch TT entry early - data will arrive while we do other work
+    ctx.tt.prefetch(ctx.board.hash);
+
     if (ctx.check_time()) return 0;
 
     ctx.nodes_searched++;

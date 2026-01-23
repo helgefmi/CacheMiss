@@ -51,6 +51,13 @@ set(CMAKE_CXX_FLAGS_RELEASE
     ${LTO_FLAG}")
 set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${LTO_FLAG}")
 
+# Profile: optimized for perf analysis (no LTO for accurate function attribution)
+set(CMAKE_CXX_FLAGS_PROFILE
+    "-O3 -g -DNDEBUG -fno-omit-frame-pointer \
+    -march=native -mtune=native \
+    -Wall -Wextra -Wpedantic")
+set(CMAKE_EXE_LINKER_FLAGS_PROFILE "")
+
 # Core chess library (shared between engine and tools)
 add_library(cachemiss_core STATIC
     src/board.cpp

@@ -1,5 +1,6 @@
 build/
 build-release/
+build_profile/
 builds/
 .cache/
 compile_commands.json
@@ -9,3 +10,5 @@ data/
 *.log
 lichess_bot_auto_logs/
 config.yml
+perf.data*
+/perf

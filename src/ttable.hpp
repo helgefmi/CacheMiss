@@ -34,6 +34,12 @@ public:
     // Call before each new search to age existing entries
     void new_search() { current_generation++; }
 
+    // Prefetch entry for given hash into cache.
+    // Call early, then do other work, then call probe().
+    void prefetch(u64 hash) const {
+        __builtin_prefetch(&table[hash & mask], 0, 0);
+    }
+
     // Probe the TT. Returns true if entry can be used for cutoff.
     // Always sets best_move if entry exists (for move ordering).
     // ply is needed to adjust mate scores to be ply-independent.
