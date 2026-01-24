@@ -92,9 +92,10 @@ target_link_libraries(pgn2epd cachemiss_core)
 add_executable(gen_magics tools/gen_magics.cpp)
 target_include_directories(gen_magics PRIVATE src)
 
-# Eval tuner tool
+# Eval tuner tool (with OpenMP parallelization)
+find_package(OpenMP REQUIRED)
 add_executable(tune_eval tools/tune_eval.cpp)
-target_link_libraries(tune_eval cachemiss_core)
+target_link_libraries(tune_eval cachemiss_core OpenMP::OpenMP_CXX)
 
 # WAC comparison tool
 add_executable(wac_compare tools/wac_compare.cpp)

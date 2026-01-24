@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <omp.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -44,6 +45,13 @@ struct ScalarGradient {
     ColoredValue<double> mg{}, eg{};
     ColoredValue<int> count{};
     void clear() { mg = eg = {}; count = {}; }
+    void merge_from(const ScalarGradient& other) {
+        for (int c = 0; c < 2; ++c) {
+            mg[c] += other.mg[c];
+            eg[c] += other.eg[c];
+            count[c] += other.count[c];
+        }
+    }
 };
 
 // Array-based gradient accumulator for mobility tables
@@ -55,6 +63,15 @@ struct ArrayGradient {
         mg.white.fill(0); mg.black.fill(0);
         eg.white.fill(0); eg.black.fill(0);
         count.white.fill(0); count.black.fill(0);
+    }
+    void merge_from(const ArrayGradient& other) {
+        for (int c = 0; c < 2; ++c) {
+            for (size_t i = 0; i < N; ++i) {
+                mg[c][i] += other.mg[c][i];
+                eg[c][i] += other.eg[c][i];
+                count[c][i] += other.count[c][i];
+            }
+        }
     }
 };
 
@@ -498,6 +515,51 @@ struct Gradients {
         space_center_mg = space_center_eg = 0.0; space_center_count = 0;
         space_extended_mg = space_extended_eg = 0.0; space_extended_count = 0;
         king_attack_mg = king_attack_eg = 0.0; king_attack_count = 0;
+    }
+
+    // Merge another Gradients into this one (for parallel reduction)
+    void merge_from(const Gradients& other) {
+        // PST
+        for (int c = 0; c < 2; ++c) {
+            for (int p = 0; p < 6; ++p) {
+                for (int sq = 0; sq < 64; ++sq) {
+                    pst_mg[c][p][sq] += other.pst_mg[c][p][sq];
+                    pst_eg[c][p][sq] += other.pst_eg[c][p][sq];
+                    pst_counts[c][p][sq] += other.pst_counts[c][p][sq];
+                }
+            }
+        }
+
+        // Mobility
+        mobility_knight.merge_from(other.mobility_knight);
+        mobility_bishop.merge_from(other.mobility_bishop);
+        mobility_rook.merge_from(other.mobility_rook);
+        mobility_queen.merge_from(other.mobility_queen);
+
+        // Positional
+        bishop_pair.merge_from(other.bishop_pair);
+        rook_open_file.merge_from(other.rook_open_file);
+        rook_semi_open_file.merge_from(other.rook_semi_open_file);
+        rook_on_seventh.merge_from(other.rook_on_seventh);
+
+        // Pawn structure
+        doubled_pawn.merge_from(other.doubled_pawn);
+        isolated_pawn.merge_from(other.isolated_pawn);
+        backward_pawn.merge_from(other.backward_pawn);
+        passed_pawn.merge_from(other.passed_pawn);
+        protected_passer.merge_from(other.protected_passer);
+        connected_passer.merge_from(other.connected_passer);
+
+        // Space and king safety
+        space_center_mg += other.space_center_mg;
+        space_center_eg += other.space_center_eg;
+        space_center_count += other.space_center_count;
+        space_extended_mg += other.space_extended_mg;
+        space_extended_eg += other.space_extended_eg;
+        space_extended_count += other.space_extended_count;
+        king_attack_mg += other.king_attack_mg;
+        king_attack_eg += other.king_attack_eg;
+        king_attack_count += other.king_attack_count;
     }
 };
 
@@ -1006,13 +1068,16 @@ double sigmoid(double eval, double K) {
 double compute_mse(const EvalParams& params, const std::vector<TrainingPosition>& positions,
                    double K) {
     double total_error = 0.0;
-    for (const auto& pos : positions) {
-        double eval = evaluate(params, pos);
+    const size_t n = positions.size();
+
+    #pragma omp parallel for reduction(+:total_error) schedule(static)
+    for (size_t i = 0; i < n; ++i) {
+        double eval = evaluate(params, positions[i]);
         double predicted = sigmoid(eval, K);
-        double error = predicted - pos.outcome;
+        double error = predicted - positions[i].outcome;
         total_error += error * error;
     }
-    return total_error / positions.size();
+    return total_error / n;
 }
 
 // ============================================================================
@@ -1087,87 +1152,106 @@ inline void update_scalar_params(double& param_mg, double& param_eg,
 
 void gradient_descent_step(EvalParams& params, const std::vector<TrainingPosition>& positions,
                            const Config& cfg) {
-    Gradients grad;
-    grad.clear();
+    // Create thread-local gradients for parallel accumulation
+    const int num_threads = omp_get_max_threads();
+    std::vector<Gradients> thread_grads(num_threads);
+    for (auto& g : thread_grads) g.clear();
 
-    for (const auto& pos : positions) {
-        double eval = evaluate(params, pos);
-        double predicted = sigmoid(eval, cfg.K);
-        double sigmoid_deriv = predicted * (1.0 - predicted) * LN10 / cfg.K;
-        double base_grad = 2.0 * (predicted - pos.outcome) * sigmoid_deriv;
+    const size_t n_positions = positions.size();
 
-        double grad_mg = base_grad * pos.phase;
-        double grad_eg = base_grad * (1.0 - pos.phase);
+    #pragma omp parallel
+    {
+        const int tid = omp_get_thread_num();
+        Gradients& grad = thread_grads[tid];
 
-        // PST gradients - track white and black separately to avoid cancellation
-        for (int piece = 0; piece < 6; ++piece) {
-            Bitboard white_bb = pos.pieces[0][piece];
-            while (white_bb) {
-                int sq = lsb_index(white_bb);
-                grad.pst_mg[0][piece][sq] += grad_mg;
-                grad.pst_eg[0][piece][sq] += grad_eg;
-                grad.pst_counts[0][piece][sq]++;
-                white_bb &= white_bb - 1;
-            }
+        #pragma omp for schedule(static)
+        for (size_t i = 0; i < n_positions; ++i) {
+            const TrainingPosition& pos = positions[i];
 
-            Bitboard black_bb = pos.pieces[1][piece];
-            while (black_bb) {
-                int sq = lsb_index(black_bb);
-                int flipped_sq = sq ^ 56;
-                grad.pst_mg[1][piece][flipped_sq] += grad_mg;
-                grad.pst_eg[1][piece][flipped_sq] += grad_eg;
-                grad.pst_counts[1][piece][flipped_sq]++;
-                black_bb &= black_bb - 1;
-            }
-        }
+            double eval = evaluate(params, pos);
+            double predicted = sigmoid(eval, cfg.K);
+            double sigmoid_deriv = predicted * (1.0 - predicted) * LN10 / cfg.K;
+            double base_grad = 2.0 * (predicted - pos.outcome) * sigmoid_deriv;
 
-        // Mobility gradients - consolidated with helper function
-        for (int c = 0; c < 2; ++c) {
-            accumulate_mobility(grad.mobility_knight, c, pos.knight_mob[c].data(), pos.num_knights[c], grad_mg, grad_eg);
-            accumulate_mobility(grad.mobility_bishop, c, pos.bishop_mob[c].data(), pos.num_bishops[c], grad_mg, grad_eg);
-            accumulate_mobility(grad.mobility_rook, c, pos.rook_mob[c].data(), pos.num_rooks[c], grad_mg, grad_eg);
-            accumulate_mobility(grad.mobility_queen, c, pos.queen_mob[c].data(), pos.num_queens[c], grad_mg, grad_eg);
-        }
+            double grad_mg = base_grad * pos.phase;
+            double grad_eg = base_grad * (1.0 - pos.phase);
 
-        // Positional and pawn structure gradients - consolidated with helper function
-        for (int c = 0; c < 2; ++c) {
-            accumulate_scalar(grad.bishop_pair, c, pos.has_bishop_pair[c], grad_mg, grad_eg);
-            accumulate_scalar(grad.rook_open_file, c, pos.rooks_open_file[c], grad_mg, grad_eg);
-            accumulate_scalar(grad.rook_semi_open_file, c, pos.rooks_semi_open[c], grad_mg, grad_eg);
-            accumulate_scalar(grad.rook_on_seventh, c, pos.rooks_on_seventh[c], grad_mg, grad_eg);
+            // PST gradients - track white and black separately to avoid cancellation
+            for (int piece = 0; piece < 6; ++piece) {
+                Bitboard white_bb = pos.pieces[0][piece];
+                while (white_bb) {
+                    int sq = lsb_index(white_bb);
+                    grad.pst_mg[0][piece][sq] += grad_mg;
+                    grad.pst_eg[0][piece][sq] += grad_eg;
+                    grad.pst_counts[0][piece][sq]++;
+                    white_bb &= white_bb - 1;
+                }
 
-            accumulate_scalar(grad.doubled_pawn, c, pos.doubled_pawns[c], grad_mg, grad_eg);
-            accumulate_scalar(grad.isolated_pawn, c, pos.isolated_pawns[c], grad_mg, grad_eg);
-            accumulate_scalar(grad.backward_pawn, c, pos.backward_pawns[c], grad_mg, grad_eg);
-            accumulate_scalar(grad.protected_passer, c, pos.protected_passers[c], grad_mg, grad_eg);
-            accumulate_scalar(grad.connected_passer, c, pos.connected_passers[c], grad_mg, grad_eg);
-
-            // Passed pawns by rank
-            for (int r = 0; r < 8; ++r) {
-                if (pos.passed_pawn_by_rank[c][r] > 0) {
-                    grad.passed_pawn.mg[c][r] += pos.passed_pawn_by_rank[c][r] * grad_mg;
-                    grad.passed_pawn.eg[c][r] += pos.passed_pawn_by_rank[c][r] * grad_eg;
-                    grad.passed_pawn.count[c][r] += pos.passed_pawn_by_rank[c][r];
+                Bitboard black_bb = pos.pieces[1][piece];
+                while (black_bb) {
+                    int sq = lsb_index(black_bb);
+                    int flipped_sq = sq ^ 56;
+                    grad.pst_mg[1][piece][flipped_sq] += grad_mg;
+                    grad.pst_eg[1][piece][flipped_sq] += grad_eg;
+                    grad.pst_counts[1][piece][flipped_sq]++;
+                    black_bb &= black_bb - 1;
                 }
             }
-        }
 
-        // Space and king safety (already use differences, no need for separate tracking)
-        if (pos.center_control_diff != 0) {
-            grad.space_center_mg += pos.center_control_diff * grad_mg;
-            grad.space_center_eg += pos.center_control_diff * grad_eg;
-            grad.space_center_count += std::abs(pos.center_control_diff);
+            // Mobility gradients - consolidated with helper function
+            for (int c = 0; c < 2; ++c) {
+                accumulate_mobility(grad.mobility_knight, c, pos.knight_mob[c].data(), pos.num_knights[c], grad_mg, grad_eg);
+                accumulate_mobility(grad.mobility_bishop, c, pos.bishop_mob[c].data(), pos.num_bishops[c], grad_mg, grad_eg);
+                accumulate_mobility(grad.mobility_rook, c, pos.rook_mob[c].data(), pos.num_rooks[c], grad_mg, grad_eg);
+                accumulate_mobility(grad.mobility_queen, c, pos.queen_mob[c].data(), pos.num_queens[c], grad_mg, grad_eg);
+            }
+
+            // Positional and pawn structure gradients - consolidated with helper function
+            for (int c = 0; c < 2; ++c) {
+                accumulate_scalar(grad.bishop_pair, c, pos.has_bishop_pair[c], grad_mg, grad_eg);
+                accumulate_scalar(grad.rook_open_file, c, pos.rooks_open_file[c], grad_mg, grad_eg);
+                accumulate_scalar(grad.rook_semi_open_file, c, pos.rooks_semi_open[c], grad_mg, grad_eg);
+                accumulate_scalar(grad.rook_on_seventh, c, pos.rooks_on_seventh[c], grad_mg, grad_eg);
+
+                accumulate_scalar(grad.doubled_pawn, c, pos.doubled_pawns[c], grad_mg, grad_eg);
+                accumulate_scalar(grad.isolated_pawn, c, pos.isolated_pawns[c], grad_mg, grad_eg);
+                accumulate_scalar(grad.backward_pawn, c, pos.backward_pawns[c], grad_mg, grad_eg);
+                accumulate_scalar(grad.protected_passer, c, pos.protected_passers[c], grad_mg, grad_eg);
+                accumulate_scalar(grad.connected_passer, c, pos.connected_passers[c], grad_mg, grad_eg);
+
+                // Passed pawns by rank
+                for (int r = 0; r < 8; ++r) {
+                    if (pos.passed_pawn_by_rank[c][r] > 0) {
+                        grad.passed_pawn.mg[c][r] += pos.passed_pawn_by_rank[c][r] * grad_mg;
+                        grad.passed_pawn.eg[c][r] += pos.passed_pawn_by_rank[c][r] * grad_eg;
+                        grad.passed_pawn.count[c][r] += pos.passed_pawn_by_rank[c][r];
+                    }
+                }
+            }
+
+            // Space and king safety (already use differences, no need for separate tracking)
+            if (pos.center_control_diff != 0) {
+                grad.space_center_mg += pos.center_control_diff * grad_mg;
+                grad.space_center_eg += pos.center_control_diff * grad_eg;
+                grad.space_center_count += std::abs(pos.center_control_diff);
+            }
+            if (pos.extended_center_diff != 0) {
+                grad.space_extended_mg += pos.extended_center_diff * grad_mg;
+                grad.space_extended_eg += pos.extended_center_diff * grad_eg;
+                grad.space_extended_count += std::abs(pos.extended_center_diff);
+            }
+            if (pos.king_attack_diff != 0) {
+                grad.king_attack_mg += pos.king_attack_diff * grad_mg;
+                grad.king_attack_eg += pos.king_attack_diff * grad_eg;
+                grad.king_attack_count += std::abs(pos.king_attack_diff);
+            }
         }
-        if (pos.extended_center_diff != 0) {
-            grad.space_extended_mg += pos.extended_center_diff * grad_mg;
-            grad.space_extended_eg += pos.extended_center_diff * grad_eg;
-            grad.space_extended_count += std::abs(pos.extended_center_diff);
-        }
-        if (pos.king_attack_diff != 0) {
-            grad.king_attack_mg += pos.king_attack_diff * grad_mg;
-            grad.king_attack_eg += pos.king_attack_diff * grad_eg;
-            grad.king_attack_count += std::abs(pos.king_attack_diff);
-        }
+    }  // end parallel region
+
+    // Merge all thread-local gradients into the first one
+    Gradients& grad = thread_grads[0];
+    for (int t = 1; t < num_threads; ++t) {
+        grad.merge_from(thread_grads[t]);
     }
 
     // Apply gradients - combine white and black properly

@@ -46,24 +46,6 @@ static void test_see_pawn_takes_queen() {
     ASSERT_EQ(result, SEE_QUEEN);
 }
 
-static void test_see_knight_takes_knight() {
-    // Equal trade: NxN
-    Board board("8/8/3n4/4N3/8/8/8/K6k w - - 0 1");
-    auto move = find_move(board, E5, D6);
-
-    // Capture is D6, not valid in this position. Let me fix:
-    // Nxd6 - knight on e5, black knight on d6? But that's rank 6, e5 knight can't reach d6
-    // Let me use a correct position
-}
-
-static void test_see_equal_knight_trade() {
-    // Knight takes knight, defended by another knight
-    Board board("8/8/8/3n4/2N5/8/8/K6k w - - 0 1");
-    // White knight c4 can take black knight d5? No, knight can't reach adjacent diagonal
-    // Let me use: Nc4 attacks d6, e5, b6, a5, b2, d2, a3, e3
-    // Black knight on e5: Nc4xe5
-}
-
 static void test_see_nxn_equal() {
     // White knight on d4, black knight on e6 defended by knight on d8
     // Note: Knight on e7 can't reach e6 (not a valid knight move)
@@ -86,13 +68,6 @@ static void test_see_queen_takes_defended_pawn() {
     int result = see(board, move);
     // Qxd5, cxd5 -> Q(900) - P(100) = -800 net
     ASSERT_EQ(result, SEE_PAWN - SEE_QUEEN);  // 100 - 900 = -800
-}
-
-static void test_see_rook_battery() {
-    // Two rooks - x-ray should be handled
-    Board board("r7/8/8/8/4n3/8/8/R3K2k w - - 0 1");
-    // Ra1 attacks e4 with Ra8 behind... wait, that's on same file but Ra8 is black
-    // Let me try: White rooks on a1 and a8, black knight on a4
 }
 
 static void test_see_rook_xray() {
@@ -185,17 +160,6 @@ static void test_see_complex_exchange() {
     // dxe4: we lose rook (500), so running total: 330 - 500 = -170
     // Nxe4: capture pawn (100), running total: -170 + 100 = -70
     ASSERT_EQ(result, SEE_BISHOP - SEE_ROOK + SEE_PAWN);
-}
-
-static void test_see_losing_capture() {
-    // Clearly losing capture: pawn takes defended rook
-    Board board("8/8/8/3r4/4P3/3R4/8/K6k w - - 0 1");
-    // exd5, Rxd5 -> +500 - 100 = ???
-    // No wait, pawn takes rook: gain 500
-    // Our rook recaptures? No, black rook on d5 takes our pawn
-    // Let me redo: white pawn e4, black rook d5, white rook d3
-    // After exd5, what attacks d5? Only white rook d3
-    // So: exd5 +500, black has nothing to recapture. Net: +500
 }
 
 static void test_see_pawn_takes_defended_rook() {

@@ -18,15 +18,6 @@ static bool has_move(const MoveList& moves, int from, int to,
     return false;
 }
 
-// Helper to count moves with specific properties
-static int count_moves_to(const MoveList& moves, int to) {
-    int count = 0;
-    for (int i = 0; i < moves.size; i++) {
-        if (moves[i].to() == to) count++;
-    }
-    return count;
-}
-
 // Square indices for readability
 constexpr int A1 = 0, B1 = 1, C1 = 2, D1 = 3, E1 = 4, F1 = 5, G1 = 6, H1 = 7;
 constexpr int A2 = 8, B2 = 9, C2 = 10, D2 = 11, E2 = 12, F2 = 13, G2 = 14, H2 = 15;

@@ -36,19 +36,6 @@ static void test_tripled_pawns() {
     ASSERT_LT(eval_tripled, eval_separate);
 }
 
-static void test_isolated_pawn() {
-    // Single isolated pawn on d5 (no pawns on c or e files)
-    Board isolated("8/8/8/3P4/8/8/8/K6k w - - 0 1");
-    // Pawn with neighbor
-    Board connected("8/8/8/2PP4/8/8/8/K6k w - - 0 1");
-
-    int eval_isolated = evaluate(isolated);
-    int eval_connected = evaluate(connected);
-
-    // The connected position has more material, so even subtracting that
-    // we should see the isolation penalty. Let's use positions with same material.
-}
-
 static void test_isolated_pawn_penalty() {
     // d4 pawn isolated (no pawns on c or e files)
     Board isolated("8/8/8/8/3P4/8/8/K6k w - - 0 1");
@@ -170,16 +157,17 @@ static void test_no_bishop_pair_with_one() {
 static void test_rook_open_file() {
     // Rook on open d-file (no pawns)
     Board open("8/8/8/8/8/8/8/K2R3k w - - 0 1");
-    // Rook on closed file (pawns present)
+    // Rook on closed file (pawns present) - has extra material but less mobility
     Board closed("3p4/8/8/8/8/8/3P4/K2R3k w - - 0 1");
 
     int eval_open = evaluate(open);
     int eval_closed = evaluate(closed);
 
     // Open file rook should be worth more
-    // Note: closed position has extra pawns which adds material
-    // The test verifies the open file bonus is applied
     ASSERT_TRUE(eval_open > 0);  // White has rook
+    // Closed has extra pawns (~200cp) but open file bonus + better mobility
+    // Just verify both evaluate reasonably
+    ASSERT_TRUE(eval_closed > eval_open - 300);  // Closed shouldn't be much worse
 }
 
 static void test_rook_semi_open_file() {
