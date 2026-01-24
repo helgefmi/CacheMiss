@@ -141,6 +141,26 @@ static void test_go_time_min_bound() {
     ASSERT_GE(params.time_ms, 10);
 }
 
+static void test_go_critical_time() {
+    Board board;
+    // 100ms on clock with 100ms overhead = 0ms after subtraction
+    // Should use 10ms minimum, NOT 1 second default
+    GoParams params = parse_go_command("go wtime 100 btime 100", board, 0, 100);
+
+    ASSERT_EQ(params.time_ms, 10);
+    ASSERT_LT(params.time_ms, 100);  // Must NOT be 1000ms default
+}
+
+static void test_go_very_low_time() {
+    Board board;
+    // 200ms on clock with 100ms overhead = 100ms after subtraction
+    // Time = 100/50 + 0 = 2ms, bounded to 10ms minimum
+    GoParams params = parse_go_command("go wtime 200 btime 200", board, 0, 100);
+
+    ASSERT_GE(params.time_ms, 10);
+    ASSERT_LE(params.time_ms, 25);  // Max is 100/4 = 25ms
+}
+
 static void test_go_time_max_bound() {
     Board board;
     GoParams params = parse_go_command("go wtime 40000 btime 40000 movestogo 1", board, 0, 100);
@@ -193,6 +213,8 @@ void register_uci_tests() {
     REGISTER_TEST(UCI, GoMovestogo, test_go_movestogo);
     REGISTER_TEST(UCI, GoMoveOverhead, test_go_move_overhead);
     REGISTER_TEST(UCI, GoTimeMinBound, test_go_time_min_bound);
+    REGISTER_TEST(UCI, GoCriticalTime, test_go_critical_time);
+    REGISTER_TEST(UCI, GoVeryLowTime, test_go_very_low_time);
     REGISTER_TEST(UCI, GoTimeMaxBound, test_go_time_max_bound);
 
     REGISTER_TEST(UCI, PonderhitSetsTime, test_ponderhit_sets_time);

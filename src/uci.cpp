@@ -133,18 +133,23 @@ GoParams parse_go_command(const std::string& line, const Board& board, int moves
     }
 
     // Calculate time we'd use for a normal search (even if pondering)
-    int normal_time = 1000;  // Default: 1 second
+    int normal_time = 1000;  // Default: 1 second (only used when no time control info)
 
     if (movetime > 0) {
         normal_time = movetime;
-    } else {
+    } else if (wtime > 0 || btime > 0) {
+        // We have time control info - calculate time for move
         int our_time = (board.turn == Color::White) ? wtime : btime;
         int our_inc = (board.turn == Color::White) ? winc : binc;
 
         // Subtract move overhead to account for network/GUI latency
         our_time = std::max(0, our_time - move_overhead_ms);
 
-        if (our_time > 0) {
+        int time_for_move;
+        if (our_time == 0) {
+            // Critical time - use absolute minimum
+            time_for_move = 10;
+        } else {
             // Determine moves remaining
             int moves_remaining;
             if (movestogo > 0) {
@@ -154,14 +159,14 @@ GoParams parse_go_command(const std::string& line, const Board& board, int moves
             }
 
             // Time = base allocation + most of increment
-            int time_for_move = our_time / moves_remaining + our_inc * 3 / 4;
+            time_for_move = our_time / moves_remaining + our_inc * 3 / 4;
 
             // Safety bounds
             if (time_for_move < 10) time_for_move = 10;
             if (time_for_move > our_time / 4) time_for_move = our_time / 4;
-
-            normal_time = time_for_move;
         }
+
+        normal_time = time_for_move;
     }
 
     // For infinite or ponder, use very long time but remember normal_time for ponderhit
