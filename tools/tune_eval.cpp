@@ -27,6 +27,38 @@ constexpr Bitboard CENTER_4 = 0x0000001818000000ULL;         // d4, d5, e4, e5
 constexpr Bitboard EXTENDED_CENTER = 0x00003C3C3C3C0000ULL;  // c3-f6 region
 
 // ============================================================================
+// DRY Helper Types for White/Black Gradient Tracking
+// ============================================================================
+
+// Wrapper for values tracked separately per color
+template<typename T>
+struct ColoredValue {
+    T white{};
+    T black{};
+    T& operator[](int c) { return c == 0 ? white : black; }
+    const T& operator[](int c) const { return c == 0 ? white : black; }
+};
+
+// Gradient accumulator for a single scalar parameter (MG/EG + count per color)
+struct ScalarGradient {
+    ColoredValue<double> mg{}, eg{};
+    ColoredValue<int> count{};
+    void clear() { mg = eg = {}; count = {}; }
+};
+
+// Array-based gradient accumulator for mobility tables
+template<size_t N>
+struct ArrayGradient {
+    ColoredValue<std::array<double, N>> mg{}, eg{};
+    ColoredValue<std::array<int, N>> count{};
+    void clear() {
+        mg.white.fill(0); mg.black.fill(0);
+        eg.white.fill(0); eg.black.fill(0);
+        count.white.fill(0); count.black.fill(0);
+    }
+};
+
+// ============================================================================
 // PGN Parser (adapted from tune_pst.cpp)
 // ============================================================================
 
@@ -276,6 +308,19 @@ public:
 };
 
 // ============================================================================
+// Helper for array initialization
+// ============================================================================
+
+template<size_t N>
+void init_array_pair(std::array<double, N>& mg, std::array<double, N>& eg,
+                     const int (&default_mg)[N], const int (&default_eg)[N]) {
+    for (size_t i = 0; i < N; ++i) {
+        mg[i] = default_mg[i];
+        eg[i] = default_eg[i];
+    }
+}
+
+// ============================================================================
 // EvalParams - All Tunable Parameters
 // ============================================================================
 
@@ -326,22 +371,10 @@ struct EvalParams {
         }
 
         // Mobility tables (from eval_params.hpp)
-        for (int i = 0; i < 9; ++i) {
-            mobility_knight_mg[i] = MOBILITY_KNIGHT_MG[i];
-            mobility_knight_eg[i] = MOBILITY_KNIGHT_EG[i];
-        }
-        for (int i = 0; i < 14; ++i) {
-            mobility_bishop_mg[i] = MOBILITY_BISHOP_MG[i];
-            mobility_bishop_eg[i] = MOBILITY_BISHOP_EG[i];
-        }
-        for (int i = 0; i < 15; ++i) {
-            mobility_rook_mg[i] = MOBILITY_ROOK_MG[i];
-            mobility_rook_eg[i] = MOBILITY_ROOK_EG[i];
-        }
-        for (int i = 0; i < 28; ++i) {
-            mobility_queen_mg[i] = MOBILITY_QUEEN_MG[i];
-            mobility_queen_eg[i] = MOBILITY_QUEEN_EG[i];
-        }
+        init_array_pair(mobility_knight_mg, mobility_knight_eg, MOBILITY_KNIGHT_MG, MOBILITY_KNIGHT_EG);
+        init_array_pair(mobility_bishop_mg, mobility_bishop_eg, MOBILITY_BISHOP_MG, MOBILITY_BISHOP_EG);
+        init_array_pair(mobility_rook_mg, mobility_rook_eg, MOBILITY_ROOK_MG, MOBILITY_ROOK_EG);
+        init_array_pair(mobility_queen_mg, mobility_queen_eg, MOBILITY_QUEEN_MG, MOBILITY_QUEEN_EG);
 
         // Positional bonuses
         bishop_pair_mg = BISHOP_PAIR_MG; bishop_pair_eg = BISHOP_PAIR_EG;
@@ -355,10 +388,7 @@ struct EvalParams {
         backward_pawn_mg = BACKWARD_PAWN_MG; backward_pawn_eg = BACKWARD_PAWN_EG;
 
         // Passed pawns
-        for (int i = 0; i < 8; ++i) {
-            passed_pawn_mg[i] = PASSED_PAWN_MG[i];
-            passed_pawn_eg[i] = PASSED_PAWN_EG[i];
-        }
+        init_array_pair(passed_pawn_mg, passed_pawn_eg, PASSED_PAWN_MG, PASSED_PAWN_EG);
         protected_passer_mg = PROTECTED_PASSER_MG; protected_passer_eg = PROTECTED_PASSER_EG;
         connected_passer_mg = CONNECTED_PASSER_MG; connected_passer_eg = CONNECTED_PASSER_EG;
 
@@ -408,56 +438,25 @@ struct TrainingPosition {
 // ============================================================================
 
 struct Gradients {
-    // PST tables - separate tracking for white and black
-    std::array<std::array<double, 64>, 6> pst_white_mg;
-    std::array<std::array<double, 64>, 6> pst_white_eg;
-    std::array<std::array<int, 64>, 6> pst_white_counts;
-    std::array<std::array<double, 64>, 6> pst_black_mg;
-    std::array<std::array<double, 64>, 6> pst_black_eg;
-    std::array<std::array<int, 64>, 6> pst_black_counts;
+    // PST tables - using ColoredValue for white/black separation
+    ColoredValue<std::array<std::array<double, 64>, 6>> pst_mg, pst_eg;
+    ColoredValue<std::array<std::array<int, 64>, 6>> pst_counts;
 
-    // Mobility tables - separate tracking for white and black
-    std::array<double, 9> mobility_knight_white_mg, mobility_knight_black_mg;
-    std::array<double, 9> mobility_knight_white_eg, mobility_knight_black_eg;
-    std::array<int, 9> mobility_knight_white_counts, mobility_knight_black_counts;
+    // Mobility tables - using ArrayGradient
+    ArrayGradient<9> mobility_knight;
+    ArrayGradient<14> mobility_bishop;
+    ArrayGradient<15> mobility_rook;
+    ArrayGradient<28> mobility_queen;
 
-    std::array<double, 14> mobility_bishop_white_mg, mobility_bishop_black_mg;
-    std::array<double, 14> mobility_bishop_white_eg, mobility_bishop_black_eg;
-    std::array<int, 14> mobility_bishop_white_counts, mobility_bishop_black_counts;
+    // Positional scalar gradients - using ScalarGradient
+    ScalarGradient bishop_pair, rook_open_file, rook_semi_open_file, rook_on_seventh;
 
-    std::array<double, 15> mobility_rook_white_mg, mobility_rook_black_mg;
-    std::array<double, 15> mobility_rook_white_eg, mobility_rook_black_eg;
-    std::array<int, 15> mobility_rook_white_counts, mobility_rook_black_counts;
+    // Pawn structure gradients
+    ScalarGradient doubled_pawn, isolated_pawn, backward_pawn;
+    ArrayGradient<8> passed_pawn;
+    ScalarGradient protected_passer, connected_passer;
 
-    std::array<double, 28> mobility_queen_white_mg, mobility_queen_black_mg;
-    std::array<double, 28> mobility_queen_white_eg, mobility_queen_black_eg;
-    std::array<int, 28> mobility_queen_white_counts, mobility_queen_black_counts;
-
-    // Scalar gradients - separate tracking for white and black
-    double bishop_pair_white_mg, bishop_pair_white_eg, bishop_pair_black_mg, bishop_pair_black_eg;
-    int bishop_pair_white_count, bishop_pair_black_count;
-    double rook_open_file_white_mg, rook_open_file_white_eg, rook_open_file_black_mg, rook_open_file_black_eg;
-    int rook_open_file_white_count, rook_open_file_black_count;
-    double rook_semi_open_file_white_mg, rook_semi_open_file_white_eg, rook_semi_open_file_black_mg, rook_semi_open_file_black_eg;
-    int rook_semi_open_file_white_count, rook_semi_open_file_black_count;
-    double rook_on_seventh_white_mg, rook_on_seventh_white_eg, rook_on_seventh_black_mg, rook_on_seventh_black_eg;
-    int rook_on_seventh_white_count, rook_on_seventh_black_count;
-
-    double doubled_pawn_white_mg, doubled_pawn_white_eg, doubled_pawn_black_mg, doubled_pawn_black_eg;
-    int doubled_pawn_white_count, doubled_pawn_black_count;
-    double isolated_pawn_white_mg, isolated_pawn_white_eg, isolated_pawn_black_mg, isolated_pawn_black_eg;
-    int isolated_pawn_white_count, isolated_pawn_black_count;
-    double backward_pawn_white_mg, backward_pawn_white_eg, backward_pawn_black_mg, backward_pawn_black_eg;
-    int backward_pawn_white_count, backward_pawn_black_count;
-
-    std::array<double, 8> passed_pawn_white_mg, passed_pawn_white_eg, passed_pawn_black_mg, passed_pawn_black_eg;
-    std::array<int, 8> passed_pawn_white_counts, passed_pawn_black_counts;
-    double protected_passer_white_mg, protected_passer_white_eg, protected_passer_black_mg, protected_passer_black_eg;
-    int protected_passer_white_count, protected_passer_black_count;
-    double connected_passer_white_mg, connected_passer_white_eg, connected_passer_black_mg, connected_passer_black_eg;
-    int connected_passer_white_count, connected_passer_black_count;
-
-    // Space and king safety use differences, so don't need separate tracking
+    // Space and king safety use differences, so don't need separate color tracking
     double space_center_mg, space_center_eg;
     int space_center_count;
     double space_extended_mg, space_extended_eg;
@@ -466,62 +465,36 @@ struct Gradients {
     int king_attack_count;
 
     void clear() {
-        for (int p = 0; p < 6; ++p) {
-            for (int sq = 0; sq < 64; ++sq) {
-                pst_white_mg[p][sq] = pst_white_eg[p][sq] = 0.0;
-                pst_white_counts[p][sq] = 0;
-                pst_black_mg[p][sq] = pst_black_eg[p][sq] = 0.0;
-                pst_black_counts[p][sq] = 0;
+        // PST
+        for (int c = 0; c < 2; ++c) {
+            for (int p = 0; p < 6; ++p) {
+                pst_mg[c][p].fill(0);
+                pst_eg[c][p].fill(0);
+                pst_counts[c][p].fill(0);
             }
         }
 
-        for (int i = 0; i < 9; ++i) {
-            mobility_knight_white_mg[i] = mobility_knight_white_eg[i] = 0.0;
-            mobility_knight_black_mg[i] = mobility_knight_black_eg[i] = 0.0;
-            mobility_knight_white_counts[i] = mobility_knight_black_counts[i] = 0;
-        }
-        for (int i = 0; i < 14; ++i) {
-            mobility_bishop_white_mg[i] = mobility_bishop_white_eg[i] = 0.0;
-            mobility_bishop_black_mg[i] = mobility_bishop_black_eg[i] = 0.0;
-            mobility_bishop_white_counts[i] = mobility_bishop_black_counts[i] = 0;
-        }
-        for (int i = 0; i < 15; ++i) {
-            mobility_rook_white_mg[i] = mobility_rook_white_eg[i] = 0.0;
-            mobility_rook_black_mg[i] = mobility_rook_black_eg[i] = 0.0;
-            mobility_rook_white_counts[i] = mobility_rook_black_counts[i] = 0;
-        }
-        for (int i = 0; i < 28; ++i) {
-            mobility_queen_white_mg[i] = mobility_queen_white_eg[i] = 0.0;
-            mobility_queen_black_mg[i] = mobility_queen_black_eg[i] = 0.0;
-            mobility_queen_white_counts[i] = mobility_queen_black_counts[i] = 0;
-        }
+        // Mobility
+        mobility_knight.clear();
+        mobility_bishop.clear();
+        mobility_rook.clear();
+        mobility_queen.clear();
 
-        bishop_pair_white_mg = bishop_pair_white_eg = bishop_pair_black_mg = bishop_pair_black_eg = 0.0;
-        bishop_pair_white_count = bishop_pair_black_count = 0;
-        rook_open_file_white_mg = rook_open_file_white_eg = rook_open_file_black_mg = rook_open_file_black_eg = 0.0;
-        rook_open_file_white_count = rook_open_file_black_count = 0;
-        rook_semi_open_file_white_mg = rook_semi_open_file_white_eg = rook_semi_open_file_black_mg = rook_semi_open_file_black_eg = 0.0;
-        rook_semi_open_file_white_count = rook_semi_open_file_black_count = 0;
-        rook_on_seventh_white_mg = rook_on_seventh_white_eg = rook_on_seventh_black_mg = rook_on_seventh_black_eg = 0.0;
-        rook_on_seventh_white_count = rook_on_seventh_black_count = 0;
+        // Positional
+        bishop_pair.clear();
+        rook_open_file.clear();
+        rook_semi_open_file.clear();
+        rook_on_seventh.clear();
 
-        doubled_pawn_white_mg = doubled_pawn_white_eg = doubled_pawn_black_mg = doubled_pawn_black_eg = 0.0;
-        doubled_pawn_white_count = doubled_pawn_black_count = 0;
-        isolated_pawn_white_mg = isolated_pawn_white_eg = isolated_pawn_black_mg = isolated_pawn_black_eg = 0.0;
-        isolated_pawn_white_count = isolated_pawn_black_count = 0;
-        backward_pawn_white_mg = backward_pawn_white_eg = backward_pawn_black_mg = backward_pawn_black_eg = 0.0;
-        backward_pawn_white_count = backward_pawn_black_count = 0;
+        // Pawn structure
+        doubled_pawn.clear();
+        isolated_pawn.clear();
+        backward_pawn.clear();
+        passed_pawn.clear();
+        protected_passer.clear();
+        connected_passer.clear();
 
-        for (int i = 0; i < 8; ++i) {
-            passed_pawn_white_mg[i] = passed_pawn_white_eg[i] = 0.0;
-            passed_pawn_black_mg[i] = passed_pawn_black_eg[i] = 0.0;
-            passed_pawn_white_counts[i] = passed_pawn_black_counts[i] = 0;
-        }
-        protected_passer_white_mg = protected_passer_white_eg = protected_passer_black_mg = protected_passer_black_eg = 0.0;
-        protected_passer_white_count = protected_passer_black_count = 0;
-        connected_passer_white_mg = connected_passer_white_eg = connected_passer_black_mg = connected_passer_black_eg = 0.0;
-        connected_passer_white_count = connected_passer_black_count = 0;
-
+        // Space and king safety (no white/black split)
         space_center_mg = space_center_eg = 0.0; space_center_count = 0;
         space_extended_mg = space_extended_eg = 0.0; space_extended_count = 0;
         king_attack_mg = king_attack_eg = 0.0; king_attack_count = 0;
@@ -1042,6 +1015,76 @@ double compute_mse(const EvalParams& params, const std::vector<TrainingPosition>
     return total_error / positions.size();
 }
 
+// ============================================================================
+// Gradient Accumulation Helpers
+// ============================================================================
+
+// Accumulate mobility gradients for a piece type
+template<size_t N>
+void accumulate_mobility(ArrayGradient<N>& grad, int color,
+                         const u8* mob_array, int num_pieces,
+                         double grad_mg, double grad_eg) {
+    for (int i = 0; i < num_pieces; ++i) {
+        int mob = mob_array[i];
+        grad.mg[color][mob] += grad_mg;
+        grad.eg[color][mob] += grad_eg;
+        grad.count[color][mob]++;
+    }
+}
+
+// Accumulate scalar gradient (positional features, pawn structure)
+inline void accumulate_scalar(ScalarGradient& grad, int color, int feature_count,
+                              double grad_mg, double grad_eg) {
+    if (feature_count > 0) {
+        grad.mg[color] += feature_count * grad_mg;
+        grad.eg[color] += feature_count * grad_eg;
+        grad.count[color] += feature_count;
+    }
+}
+
+// ============================================================================
+// Gradient Update Helpers
+// ============================================================================
+
+// Combine white/black gradients: white_avg - black_avg
+inline double combine_grad(double white_grad, int white_count,
+                           double black_grad, int black_count) {
+    double white_avg = (white_count > 0) ? white_grad / white_count : 0.0;
+    double black_avg = (black_count > 0) ? black_grad / black_count : 0.0;
+    return white_avg - black_avg;
+}
+
+// Update array parameters from gradients
+template<size_t N>
+void update_array_params(std::array<double, N>& param_mg, std::array<double, N>& param_eg,
+                         const ArrayGradient<N>& grad, double lr) {
+    for (size_t i = 0; i < N; ++i) {
+        int total = grad.count.white[i] + grad.count.black[i];
+        if (total > 0) {
+            param_mg[i] -= lr * combine_grad(grad.mg.white[i], grad.count.white[i],
+                                             grad.mg.black[i], grad.count.black[i]);
+            param_eg[i] -= lr * combine_grad(grad.eg.white[i], grad.count.white[i],
+                                             grad.eg.black[i], grad.count.black[i]);
+        }
+    }
+}
+
+// Update scalar parameters from gradients
+inline void update_scalar_params(double& param_mg, double& param_eg,
+                                 const ScalarGradient& grad, double lr) {
+    int total = grad.count.white + grad.count.black;
+    if (total > 0) {
+        param_mg -= lr * combine_grad(grad.mg.white, grad.count.white,
+                                      grad.mg.black, grad.count.black);
+        param_eg -= lr * combine_grad(grad.eg.white, grad.count.white,
+                                      grad.eg.black, grad.count.black);
+    }
+}
+
+// ============================================================================
+// Gradient Descent Step
+// ============================================================================
+
 void gradient_descent_step(EvalParams& params, const std::vector<TrainingPosition>& positions,
                            const Config& cfg) {
     Gradients grad;
@@ -1061,9 +1104,9 @@ void gradient_descent_step(EvalParams& params, const std::vector<TrainingPositio
             Bitboard white_bb = pos.pieces[0][piece];
             while (white_bb) {
                 int sq = lsb_index(white_bb);
-                grad.pst_white_mg[piece][sq] += grad_mg;
-                grad.pst_white_eg[piece][sq] += grad_eg;
-                grad.pst_white_counts[piece][sq]++;
+                grad.pst_mg[0][piece][sq] += grad_mg;
+                grad.pst_eg[0][piece][sq] += grad_eg;
+                grad.pst_counts[0][piece][sq]++;
                 white_bb &= white_bb - 1;
             }
 
@@ -1071,111 +1114,42 @@ void gradient_descent_step(EvalParams& params, const std::vector<TrainingPositio
             while (black_bb) {
                 int sq = lsb_index(black_bb);
                 int flipped_sq = sq ^ 56;
-                // Black contributes positive gradient (we want param to decrease when black wins)
-                // The sign difference is handled in the update step
-                grad.pst_black_mg[piece][flipped_sq] += grad_mg;
-                grad.pst_black_eg[piece][flipped_sq] += grad_eg;
-                grad.pst_black_counts[piece][flipped_sq]++;
+                grad.pst_mg[1][piece][flipped_sq] += grad_mg;
+                grad.pst_eg[1][piece][flipped_sq] += grad_eg;
+                grad.pst_counts[1][piece][flipped_sq]++;
                 black_bb &= black_bb - 1;
             }
         }
 
-        // Mobility gradients - track white and black separately
-        // White pieces
-        for (int i = 0; i < pos.num_knights[0]; ++i) {
-            int mob = pos.knight_mob[0][i];
-            grad.mobility_knight_white_mg[mob] += grad_mg;
-            grad.mobility_knight_white_eg[mob] += grad_eg;
-            grad.mobility_knight_white_counts[mob]++;
-        }
-        for (int i = 0; i < pos.num_bishops[0]; ++i) {
-            int mob = pos.bishop_mob[0][i];
-            grad.mobility_bishop_white_mg[mob] += grad_mg;
-            grad.mobility_bishop_white_eg[mob] += grad_eg;
-            grad.mobility_bishop_white_counts[mob]++;
-        }
-        for (int i = 0; i < pos.num_rooks[0]; ++i) {
-            int mob = pos.rook_mob[0][i];
-            grad.mobility_rook_white_mg[mob] += grad_mg;
-            grad.mobility_rook_white_eg[mob] += grad_eg;
-            grad.mobility_rook_white_counts[mob]++;
-        }
-        for (int i = 0; i < pos.num_queens[0]; ++i) {
-            int mob = pos.queen_mob[0][i];
-            grad.mobility_queen_white_mg[mob] += grad_mg;
-            grad.mobility_queen_white_eg[mob] += grad_eg;
-            grad.mobility_queen_white_counts[mob]++;
+        // Mobility gradients - consolidated with helper function
+        for (int c = 0; c < 2; ++c) {
+            accumulate_mobility(grad.mobility_knight, c, pos.knight_mob[c].data(), pos.num_knights[c], grad_mg, grad_eg);
+            accumulate_mobility(grad.mobility_bishop, c, pos.bishop_mob[c].data(), pos.num_bishops[c], grad_mg, grad_eg);
+            accumulate_mobility(grad.mobility_rook, c, pos.rook_mob[c].data(), pos.num_rooks[c], grad_mg, grad_eg);
+            accumulate_mobility(grad.mobility_queen, c, pos.queen_mob[c].data(), pos.num_queens[c], grad_mg, grad_eg);
         }
 
-        // Black pieces
-        for (int i = 0; i < pos.num_knights[1]; ++i) {
-            int mob = pos.knight_mob[1][i];
-            grad.mobility_knight_black_mg[mob] += grad_mg;
-            grad.mobility_knight_black_eg[mob] += grad_eg;
-            grad.mobility_knight_black_counts[mob]++;
-        }
-        for (int i = 0; i < pos.num_bishops[1]; ++i) {
-            int mob = pos.bishop_mob[1][i];
-            grad.mobility_bishop_black_mg[mob] += grad_mg;
-            grad.mobility_bishop_black_eg[mob] += grad_eg;
-            grad.mobility_bishop_black_counts[mob]++;
-        }
-        for (int i = 0; i < pos.num_rooks[1]; ++i) {
-            int mob = pos.rook_mob[1][i];
-            grad.mobility_rook_black_mg[mob] += grad_mg;
-            grad.mobility_rook_black_eg[mob] += grad_eg;
-            grad.mobility_rook_black_counts[mob]++;
-        }
-        for (int i = 0; i < pos.num_queens[1]; ++i) {
-            int mob = pos.queen_mob[1][i];
-            grad.mobility_queen_black_mg[mob] += grad_mg;
-            grad.mobility_queen_black_eg[mob] += grad_eg;
-            grad.mobility_queen_black_counts[mob]++;
-        }
+        // Positional and pawn structure gradients - consolidated with helper function
+        for (int c = 0; c < 2; ++c) {
+            accumulate_scalar(grad.bishop_pair, c, pos.has_bishop_pair[c], grad_mg, grad_eg);
+            accumulate_scalar(grad.rook_open_file, c, pos.rooks_open_file[c], grad_mg, grad_eg);
+            accumulate_scalar(grad.rook_semi_open_file, c, pos.rooks_semi_open[c], grad_mg, grad_eg);
+            accumulate_scalar(grad.rook_on_seventh, c, pos.rooks_on_seventh[c], grad_mg, grad_eg);
 
-        // Positional gradients - track white and black separately
-        // White positional features
-        if (pos.has_bishop_pair[0]) {
-            grad.bishop_pair_white_mg += grad_mg;
-            grad.bishop_pair_white_eg += grad_eg;
-            grad.bishop_pair_white_count++;
-        }
-        if (pos.rooks_open_file[0] > 0) {
-            grad.rook_open_file_white_mg += pos.rooks_open_file[0] * grad_mg;
-            grad.rook_open_file_white_eg += pos.rooks_open_file[0] * grad_eg;
-            grad.rook_open_file_white_count += pos.rooks_open_file[0];
-        }
-        if (pos.rooks_semi_open[0] > 0) {
-            grad.rook_semi_open_file_white_mg += pos.rooks_semi_open[0] * grad_mg;
-            grad.rook_semi_open_file_white_eg += pos.rooks_semi_open[0] * grad_eg;
-            grad.rook_semi_open_file_white_count += pos.rooks_semi_open[0];
-        }
-        if (pos.rooks_on_seventh[0] > 0) {
-            grad.rook_on_seventh_white_mg += pos.rooks_on_seventh[0] * grad_mg;
-            grad.rook_on_seventh_white_eg += pos.rooks_on_seventh[0] * grad_eg;
-            grad.rook_on_seventh_white_count += pos.rooks_on_seventh[0];
-        }
+            accumulate_scalar(grad.doubled_pawn, c, pos.doubled_pawns[c], grad_mg, grad_eg);
+            accumulate_scalar(grad.isolated_pawn, c, pos.isolated_pawns[c], grad_mg, grad_eg);
+            accumulate_scalar(grad.backward_pawn, c, pos.backward_pawns[c], grad_mg, grad_eg);
+            accumulate_scalar(grad.protected_passer, c, pos.protected_passers[c], grad_mg, grad_eg);
+            accumulate_scalar(grad.connected_passer, c, pos.connected_passers[c], grad_mg, grad_eg);
 
-        // Black positional features
-        if (pos.has_bishop_pair[1]) {
-            grad.bishop_pair_black_mg += grad_mg;
-            grad.bishop_pair_black_eg += grad_eg;
-            grad.bishop_pair_black_count++;
-        }
-        if (pos.rooks_open_file[1] > 0) {
-            grad.rook_open_file_black_mg += pos.rooks_open_file[1] * grad_mg;
-            grad.rook_open_file_black_eg += pos.rooks_open_file[1] * grad_eg;
-            grad.rook_open_file_black_count += pos.rooks_open_file[1];
-        }
-        if (pos.rooks_semi_open[1] > 0) {
-            grad.rook_semi_open_file_black_mg += pos.rooks_semi_open[1] * grad_mg;
-            grad.rook_semi_open_file_black_eg += pos.rooks_semi_open[1] * grad_eg;
-            grad.rook_semi_open_file_black_count += pos.rooks_semi_open[1];
-        }
-        if (pos.rooks_on_seventh[1] > 0) {
-            grad.rook_on_seventh_black_mg += pos.rooks_on_seventh[1] * grad_mg;
-            grad.rook_on_seventh_black_eg += pos.rooks_on_seventh[1] * grad_eg;
-            grad.rook_on_seventh_black_count += pos.rooks_on_seventh[1];
+            // Passed pawns by rank
+            for (int r = 0; r < 8; ++r) {
+                if (pos.passed_pawn_by_rank[c][r] > 0) {
+                    grad.passed_pawn.mg[c][r] += pos.passed_pawn_by_rank[c][r] * grad_mg;
+                    grad.passed_pawn.eg[c][r] += pos.passed_pawn_by_rank[c][r] * grad_eg;
+                    grad.passed_pawn.count[c][r] += pos.passed_pawn_by_rank[c][r];
+                }
+            }
         }
 
         // Space and king safety (already use differences, no need for separate tracking)
@@ -1194,75 +1168,6 @@ void gradient_descent_step(EvalParams& params, const std::vector<TrainingPositio
             grad.king_attack_eg += pos.king_attack_diff * grad_eg;
             grad.king_attack_count += std::abs(pos.king_attack_diff);
         }
-
-        // Pawn structure gradients - track white and black separately
-        // White pawn structure
-        if (pos.doubled_pawns[0] > 0) {
-            grad.doubled_pawn_white_mg += pos.doubled_pawns[0] * grad_mg;
-            grad.doubled_pawn_white_eg += pos.doubled_pawns[0] * grad_eg;
-            grad.doubled_pawn_white_count += pos.doubled_pawns[0];
-        }
-        if (pos.isolated_pawns[0] > 0) {
-            grad.isolated_pawn_white_mg += pos.isolated_pawns[0] * grad_mg;
-            grad.isolated_pawn_white_eg += pos.isolated_pawns[0] * grad_eg;
-            grad.isolated_pawn_white_count += pos.isolated_pawns[0];
-        }
-        if (pos.backward_pawns[0] > 0) {
-            grad.backward_pawn_white_mg += pos.backward_pawns[0] * grad_mg;
-            grad.backward_pawn_white_eg += pos.backward_pawns[0] * grad_eg;
-            grad.backward_pawn_white_count += pos.backward_pawns[0];
-        }
-        for (int r = 0; r < 8; ++r) {
-            if (pos.passed_pawn_by_rank[0][r] > 0) {
-                grad.passed_pawn_white_mg[r] += pos.passed_pawn_by_rank[0][r] * grad_mg;
-                grad.passed_pawn_white_eg[r] += pos.passed_pawn_by_rank[0][r] * grad_eg;
-                grad.passed_pawn_white_counts[r] += pos.passed_pawn_by_rank[0][r];
-            }
-        }
-        if (pos.protected_passers[0] > 0) {
-            grad.protected_passer_white_mg += pos.protected_passers[0] * grad_mg;
-            grad.protected_passer_white_eg += pos.protected_passers[0] * grad_eg;
-            grad.protected_passer_white_count += pos.protected_passers[0];
-        }
-        if (pos.connected_passers[0] > 0) {
-            grad.connected_passer_white_mg += pos.connected_passers[0] * grad_mg;
-            grad.connected_passer_white_eg += pos.connected_passers[0] * grad_eg;
-            grad.connected_passer_white_count += pos.connected_passers[0];
-        }
-
-        // Black pawn structure
-        if (pos.doubled_pawns[1] > 0) {
-            grad.doubled_pawn_black_mg += pos.doubled_pawns[1] * grad_mg;
-            grad.doubled_pawn_black_eg += pos.doubled_pawns[1] * grad_eg;
-            grad.doubled_pawn_black_count += pos.doubled_pawns[1];
-        }
-        if (pos.isolated_pawns[1] > 0) {
-            grad.isolated_pawn_black_mg += pos.isolated_pawns[1] * grad_mg;
-            grad.isolated_pawn_black_eg += pos.isolated_pawns[1] * grad_eg;
-            grad.isolated_pawn_black_count += pos.isolated_pawns[1];
-        }
-        if (pos.backward_pawns[1] > 0) {
-            grad.backward_pawn_black_mg += pos.backward_pawns[1] * grad_mg;
-            grad.backward_pawn_black_eg += pos.backward_pawns[1] * grad_eg;
-            grad.backward_pawn_black_count += pos.backward_pawns[1];
-        }
-        for (int r = 0; r < 8; ++r) {
-            if (pos.passed_pawn_by_rank[1][r] > 0) {
-                grad.passed_pawn_black_mg[r] += pos.passed_pawn_by_rank[1][r] * grad_mg;
-                grad.passed_pawn_black_eg[r] += pos.passed_pawn_by_rank[1][r] * grad_eg;
-                grad.passed_pawn_black_counts[r] += pos.passed_pawn_by_rank[1][r];
-            }
-        }
-        if (pos.protected_passers[1] > 0) {
-            grad.protected_passer_black_mg += pos.protected_passers[1] * grad_mg;
-            grad.protected_passer_black_eg += pos.protected_passers[1] * grad_eg;
-            grad.protected_passer_black_count += pos.protected_passers[1];
-        }
-        if (pos.connected_passers[1] > 0) {
-            grad.connected_passer_black_mg += pos.connected_passers[1] * grad_mg;
-            grad.connected_passer_black_eg += pos.connected_passers[1] * grad_eg;
-            grad.connected_passer_black_count += pos.connected_passers[1];
-        }
     }
 
     // Apply gradients - combine white and black properly
@@ -1270,137 +1175,34 @@ void gradient_descent_step(EvalParams& params, const std::vector<TrainingPositio
     // This handles asymmetric piece frequencies correctly
     double lr = cfg.learning_rate;
 
-    // Helper lambda to compute combined gradient from white/black
-    auto combine_grad = [](double white_grad, int white_count, double black_grad, int black_count) -> double {
-        double white_avg = (white_count > 0) ? white_grad / white_count : 0.0;
-        double black_avg = (black_count > 0) ? black_grad / black_count : 0.0;
-        return white_avg - black_avg;
-    };
-
     // PST - combine white and black gradients
     for (int piece = 0; piece < 6; ++piece) {
         for (int sq = 0; sq < 64; ++sq) {
-            int total_count = grad.pst_white_counts[piece][sq] + grad.pst_black_counts[piece][sq];
+            int total_count = grad.pst_counts[0][piece][sq] + grad.pst_counts[1][piece][sq];
             if (total_count > 0) {
                 double combined_mg = combine_grad(
-                    grad.pst_white_mg[piece][sq], grad.pst_white_counts[piece][sq],
-                    grad.pst_black_mg[piece][sq], grad.pst_black_counts[piece][sq]);
+                    grad.pst_mg[0][piece][sq], grad.pst_counts[0][piece][sq],
+                    grad.pst_mg[1][piece][sq], grad.pst_counts[1][piece][sq]);
                 double combined_eg = combine_grad(
-                    grad.pst_white_eg[piece][sq], grad.pst_white_counts[piece][sq],
-                    grad.pst_black_eg[piece][sq], grad.pst_black_counts[piece][sq]);
+                    grad.pst_eg[0][piece][sq], grad.pst_counts[0][piece][sq],
+                    grad.pst_eg[1][piece][sq], grad.pst_counts[1][piece][sq]);
                 params.pst_mg[piece][sq] -= lr * combined_mg;
                 params.pst_eg[piece][sq] -= lr * combined_eg;
             }
         }
     }
 
-    // Mobility - combine white and black gradients
-    for (int i = 0; i < 9; ++i) {
-        int total = grad.mobility_knight_white_counts[i] + grad.mobility_knight_black_counts[i];
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.mobility_knight_white_mg[i], grad.mobility_knight_white_counts[i],
-                grad.mobility_knight_black_mg[i], grad.mobility_knight_black_counts[i]);
-            double combined_eg = combine_grad(
-                grad.mobility_knight_white_eg[i], grad.mobility_knight_white_counts[i],
-                grad.mobility_knight_black_eg[i], grad.mobility_knight_black_counts[i]);
-            params.mobility_knight_mg[i] -= lr * combined_mg;
-            params.mobility_knight_eg[i] -= lr * combined_eg;
-        }
-    }
-    for (int i = 0; i < 14; ++i) {
-        int total = grad.mobility_bishop_white_counts[i] + grad.mobility_bishop_black_counts[i];
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.mobility_bishop_white_mg[i], grad.mobility_bishop_white_counts[i],
-                grad.mobility_bishop_black_mg[i], grad.mobility_bishop_black_counts[i]);
-            double combined_eg = combine_grad(
-                grad.mobility_bishop_white_eg[i], grad.mobility_bishop_white_counts[i],
-                grad.mobility_bishop_black_eg[i], grad.mobility_bishop_black_counts[i]);
-            params.mobility_bishop_mg[i] -= lr * combined_mg;
-            params.mobility_bishop_eg[i] -= lr * combined_eg;
-        }
-    }
-    for (int i = 0; i < 15; ++i) {
-        int total = grad.mobility_rook_white_counts[i] + grad.mobility_rook_black_counts[i];
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.mobility_rook_white_mg[i], grad.mobility_rook_white_counts[i],
-                grad.mobility_rook_black_mg[i], grad.mobility_rook_black_counts[i]);
-            double combined_eg = combine_grad(
-                grad.mobility_rook_white_eg[i], grad.mobility_rook_white_counts[i],
-                grad.mobility_rook_black_eg[i], grad.mobility_rook_black_counts[i]);
-            params.mobility_rook_mg[i] -= lr * combined_mg;
-            params.mobility_rook_eg[i] -= lr * combined_eg;
-        }
-    }
-    for (int i = 0; i < 28; ++i) {
-        int total = grad.mobility_queen_white_counts[i] + grad.mobility_queen_black_counts[i];
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.mobility_queen_white_mg[i], grad.mobility_queen_white_counts[i],
-                grad.mobility_queen_black_mg[i], grad.mobility_queen_black_counts[i]);
-            double combined_eg = combine_grad(
-                grad.mobility_queen_white_eg[i], grad.mobility_queen_white_counts[i],
-                grad.mobility_queen_black_eg[i], grad.mobility_queen_black_counts[i]);
-            params.mobility_queen_mg[i] -= lr * combined_mg;
-            params.mobility_queen_eg[i] -= lr * combined_eg;
-        }
-    }
+    // Mobility - consolidated with helper function
+    update_array_params(params.mobility_knight_mg, params.mobility_knight_eg, grad.mobility_knight, lr);
+    update_array_params(params.mobility_bishop_mg, params.mobility_bishop_eg, grad.mobility_bishop, lr);
+    update_array_params(params.mobility_rook_mg, params.mobility_rook_eg, grad.mobility_rook, lr);
+    update_array_params(params.mobility_queen_mg, params.mobility_queen_eg, grad.mobility_queen, lr);
 
-    // Positional - combine white and black gradients
-    {
-        int total = grad.bishop_pair_white_count + grad.bishop_pair_black_count;
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.bishop_pair_white_mg, grad.bishop_pair_white_count,
-                grad.bishop_pair_black_mg, grad.bishop_pair_black_count);
-            double combined_eg = combine_grad(
-                grad.bishop_pair_white_eg, grad.bishop_pair_white_count,
-                grad.bishop_pair_black_eg, grad.bishop_pair_black_count);
-            params.bishop_pair_mg -= lr * combined_mg;
-            params.bishop_pair_eg -= lr * combined_eg;
-        }
-    }
-    {
-        int total = grad.rook_open_file_white_count + grad.rook_open_file_black_count;
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.rook_open_file_white_mg, grad.rook_open_file_white_count,
-                grad.rook_open_file_black_mg, grad.rook_open_file_black_count);
-            double combined_eg = combine_grad(
-                grad.rook_open_file_white_eg, grad.rook_open_file_white_count,
-                grad.rook_open_file_black_eg, grad.rook_open_file_black_count);
-            params.rook_open_file_mg -= lr * combined_mg;
-            params.rook_open_file_eg -= lr * combined_eg;
-        }
-    }
-    {
-        int total = grad.rook_semi_open_file_white_count + grad.rook_semi_open_file_black_count;
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.rook_semi_open_file_white_mg, grad.rook_semi_open_file_white_count,
-                grad.rook_semi_open_file_black_mg, grad.rook_semi_open_file_black_count);
-            double combined_eg = combine_grad(
-                grad.rook_semi_open_file_white_eg, grad.rook_semi_open_file_white_count,
-                grad.rook_semi_open_file_black_eg, grad.rook_semi_open_file_black_count);
-            params.rook_semi_open_file_mg -= lr * combined_mg;
-            params.rook_semi_open_file_eg -= lr * combined_eg;
-        }
-    }
-    {
-        int total = grad.rook_on_seventh_white_count + grad.rook_on_seventh_black_count;
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.rook_on_seventh_white_mg, grad.rook_on_seventh_white_count,
-                grad.rook_on_seventh_black_mg, grad.rook_on_seventh_black_count);
-            double combined_eg = combine_grad(
-                grad.rook_on_seventh_white_eg, grad.rook_on_seventh_white_count,
-                grad.rook_on_seventh_black_eg, grad.rook_on_seventh_black_count);
-            params.rook_on_seventh_mg -= lr * combined_mg;
-            params.rook_on_seventh_eg -= lr * combined_eg;
-        }
-    }
+    // Positional - consolidated with helper function
+    update_scalar_params(params.bishop_pair_mg, params.bishop_pair_eg, grad.bishop_pair, lr);
+    update_scalar_params(params.rook_open_file_mg, params.rook_open_file_eg, grad.rook_open_file, lr);
+    update_scalar_params(params.rook_semi_open_file_mg, params.rook_semi_open_file_eg, grad.rook_semi_open_file, lr);
+    update_scalar_params(params.rook_on_seventh_mg, params.rook_on_seventh_eg, grad.rook_on_seventh, lr);
 
     // Space and king safety (already use differences, so no need for white/black split)
     if (grad.space_center_count > 0) {
@@ -1416,90 +1218,31 @@ void gradient_descent_step(EvalParams& params, const std::vector<TrainingPositio
         params.king_attack_eg -= lr * grad.king_attack_eg / grad.king_attack_count;
     }
 
-    // Pawn structure - combine white and black gradients
-    {
-        int total = grad.doubled_pawn_white_count + grad.doubled_pawn_black_count;
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.doubled_pawn_white_mg, grad.doubled_pawn_white_count,
-                grad.doubled_pawn_black_mg, grad.doubled_pawn_black_count);
-            double combined_eg = combine_grad(
-                grad.doubled_pawn_white_eg, grad.doubled_pawn_white_count,
-                grad.doubled_pawn_black_eg, grad.doubled_pawn_black_count);
-            params.doubled_pawn_mg -= lr * combined_mg;
-            params.doubled_pawn_eg -= lr * combined_eg;
-        }
-    }
-    {
-        int total = grad.isolated_pawn_white_count + grad.isolated_pawn_black_count;
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.isolated_pawn_white_mg, grad.isolated_pawn_white_count,
-                grad.isolated_pawn_black_mg, grad.isolated_pawn_black_count);
-            double combined_eg = combine_grad(
-                grad.isolated_pawn_white_eg, grad.isolated_pawn_white_count,
-                grad.isolated_pawn_black_eg, grad.isolated_pawn_black_count);
-            params.isolated_pawn_mg -= lr * combined_mg;
-            params.isolated_pawn_eg -= lr * combined_eg;
-        }
-    }
-    {
-        int total = grad.backward_pawn_white_count + grad.backward_pawn_black_count;
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.backward_pawn_white_mg, grad.backward_pawn_white_count,
-                grad.backward_pawn_black_mg, grad.backward_pawn_black_count);
-            double combined_eg = combine_grad(
-                grad.backward_pawn_white_eg, grad.backward_pawn_white_count,
-                grad.backward_pawn_black_eg, grad.backward_pawn_black_count);
-            params.backward_pawn_mg -= lr * combined_mg;
-            params.backward_pawn_eg -= lr * combined_eg;
-        }
-    }
-    for (int r = 0; r < 8; ++r) {
-        int total = grad.passed_pawn_white_counts[r] + grad.passed_pawn_black_counts[r];
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.passed_pawn_white_mg[r], grad.passed_pawn_white_counts[r],
-                grad.passed_pawn_black_mg[r], grad.passed_pawn_black_counts[r]);
-            double combined_eg = combine_grad(
-                grad.passed_pawn_white_eg[r], grad.passed_pawn_white_counts[r],
-                grad.passed_pawn_black_eg[r], grad.passed_pawn_black_counts[r]);
-            params.passed_pawn_mg[r] -= lr * combined_mg;
-            params.passed_pawn_eg[r] -= lr * combined_eg;
-        }
-    }
-    {
-        int total = grad.protected_passer_white_count + grad.protected_passer_black_count;
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.protected_passer_white_mg, grad.protected_passer_white_count,
-                grad.protected_passer_black_mg, grad.protected_passer_black_count);
-            double combined_eg = combine_grad(
-                grad.protected_passer_white_eg, grad.protected_passer_white_count,
-                grad.protected_passer_black_eg, grad.protected_passer_black_count);
-            params.protected_passer_mg -= lr * combined_mg;
-            params.protected_passer_eg -= lr * combined_eg;
-        }
-    }
-    {
-        int total = grad.connected_passer_white_count + grad.connected_passer_black_count;
-        if (total > 0) {
-            double combined_mg = combine_grad(
-                grad.connected_passer_white_mg, grad.connected_passer_white_count,
-                grad.connected_passer_black_mg, grad.connected_passer_black_count);
-            double combined_eg = combine_grad(
-                grad.connected_passer_white_eg, grad.connected_passer_white_count,
-                grad.connected_passer_black_eg, grad.connected_passer_black_count);
-            params.connected_passer_mg -= lr * combined_mg;
-            params.connected_passer_eg -= lr * combined_eg;
-        }
-    }
+    // Pawn structure - consolidated with helper function
+    update_scalar_params(params.doubled_pawn_mg, params.doubled_pawn_eg, grad.doubled_pawn, lr);
+    update_scalar_params(params.isolated_pawn_mg, params.isolated_pawn_eg, grad.isolated_pawn, lr);
+    update_scalar_params(params.backward_pawn_mg, params.backward_pawn_eg, grad.backward_pawn, lr);
+    update_array_params(params.passed_pawn_mg, params.passed_pawn_eg, grad.passed_pawn, lr);
+    update_scalar_params(params.protected_passer_mg, params.protected_passer_eg, grad.protected_passer, lr);
+    update_scalar_params(params.connected_passer_mg, params.connected_passer_eg, grad.connected_passer, lr);
 }
 
 // ============================================================================
 // Output Formatting
 // ============================================================================
+
+// Helper to print a mobility table array
+template<size_t N>
+void print_mobility_table(std::ostream& out, const char* name,
+                          const std::array<double, N>& values, int wrap_at = 0) {
+    out << "constexpr int " << name << "[" << N << "] = {";
+    for (size_t i = 0; i < N; ++i) {
+        if (wrap_at > 0 && i > 0 && i % wrap_at == 0) out << "\n    ";
+        out << static_cast<int>(std::round(values[i]));
+        if (i < N - 1) out << ", ";
+    }
+    out << "};\n";
+}
 
 void print_eval_params(const EvalParams& params, std::ostream& out) {
     out << "// eval_params.hpp - Auto-generated by tune_eval\n";
@@ -1540,63 +1283,18 @@ void print_eval_params(const EvalParams& params, std::ostream& out) {
 
     // Mobility tables
     out << "// Mobility tables\n";
-    out << "constexpr int MOBILITY_KNIGHT_MG[9] = {";
-    for (int i = 0; i < 9; ++i) {
-        out << static_cast<int>(std::round(params.mobility_knight_mg[i]));
-        if (i < 8) out << ", ";
-    }
-    out << "};\n";
-
-    out << "constexpr int MOBILITY_KNIGHT_EG[9] = {";
-    for (int i = 0; i < 9; ++i) {
-        out << static_cast<int>(std::round(params.mobility_knight_eg[i]));
-        if (i < 8) out << ", ";
-    }
-    out << "};\n\n";
-
-    out << "constexpr int MOBILITY_BISHOP_MG[14] = {";
-    for (int i = 0; i < 14; ++i) {
-        out << static_cast<int>(std::round(params.mobility_bishop_mg[i]));
-        if (i < 13) out << ", ";
-    }
-    out << "};\n";
-
-    out << "constexpr int MOBILITY_BISHOP_EG[14] = {";
-    for (int i = 0; i < 14; ++i) {
-        out << static_cast<int>(std::round(params.mobility_bishop_eg[i]));
-        if (i < 13) out << ", ";
-    }
-    out << "};\n\n";
-
-    out << "constexpr int MOBILITY_ROOK_MG[15] = {";
-    for (int i = 0; i < 15; ++i) {
-        out << static_cast<int>(std::round(params.mobility_rook_mg[i]));
-        if (i < 14) out << ", ";
-    }
-    out << "};\n";
-
-    out << "constexpr int MOBILITY_ROOK_EG[15] = {";
-    for (int i = 0; i < 15; ++i) {
-        out << static_cast<int>(std::round(params.mobility_rook_eg[i]));
-        if (i < 14) out << ", ";
-    }
-    out << "};\n\n";
-
-    out << "constexpr int MOBILITY_QUEEN_MG[28] = {";
-    for (int i = 0; i < 28; ++i) {
-        if (i > 0 && i % 10 == 0) out << "\n    ";
-        out << static_cast<int>(std::round(params.mobility_queen_mg[i]));
-        if (i < 27) out << ", ";
-    }
-    out << "};\n";
-
-    out << "constexpr int MOBILITY_QUEEN_EG[28] = {";
-    for (int i = 0; i < 28; ++i) {
-        if (i > 0 && i % 10 == 0) out << "\n    ";
-        out << static_cast<int>(std::round(params.mobility_queen_eg[i]));
-        if (i < 27) out << ", ";
-    }
-    out << "};\n\n";
+    print_mobility_table(out, "MOBILITY_KNIGHT_MG", params.mobility_knight_mg);
+    print_mobility_table(out, "MOBILITY_KNIGHT_EG", params.mobility_knight_eg);
+    out << "\n";
+    print_mobility_table(out, "MOBILITY_BISHOP_MG", params.mobility_bishop_mg);
+    print_mobility_table(out, "MOBILITY_BISHOP_EG", params.mobility_bishop_eg);
+    out << "\n";
+    print_mobility_table(out, "MOBILITY_ROOK_MG", params.mobility_rook_mg);
+    print_mobility_table(out, "MOBILITY_ROOK_EG", params.mobility_rook_eg);
+    out << "\n";
+    print_mobility_table(out, "MOBILITY_QUEEN_MG", params.mobility_queen_mg, 10);
+    print_mobility_table(out, "MOBILITY_QUEEN_EG", params.mobility_queen_eg, 10);
+    out << "\n";
 
     // Positional bonuses
     out << "// Positional bonuses\n";
@@ -1622,19 +1320,9 @@ void print_eval_params(const EvalParams& params, std::ostream& out) {
 
     // Passed pawns
     out << "// Passed pawns\n";
-    out << "constexpr int PASSED_PAWN_MG[8] = {";
-    for (int i = 0; i < 8; ++i) {
-        out << static_cast<int>(std::round(params.passed_pawn_mg[i]));
-        if (i < 7) out << ", ";
-    }
-    out << "};\n";
-
-    out << "constexpr int PASSED_PAWN_EG[8] = {";
-    for (int i = 0; i < 8; ++i) {
-        out << static_cast<int>(std::round(params.passed_pawn_eg[i]));
-        if (i < 7) out << ", ";
-    }
-    out << "};\n\n";
+    print_mobility_table(out, "PASSED_PAWN_MG", params.passed_pawn_mg);
+    print_mobility_table(out, "PASSED_PAWN_EG", params.passed_pawn_eg);
+    out << "\n";
 
     out << "constexpr int PROTECTED_PASSER_MG = " << static_cast<int>(std::round(params.protected_passer_mg)) << ";\n";
     out << "constexpr int PROTECTED_PASSER_EG = " << static_cast<int>(std::round(params.protected_passer_eg)) << ";\n";
