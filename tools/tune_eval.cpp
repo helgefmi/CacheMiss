@@ -233,6 +233,29 @@ struct PGNGame {
     std::vector<std::string> moves;
 };
 
+// Strip all {comments} and (variations) before tokenizing
+// Handles multi-line and nested comments/variations
+std::string strip_comments_and_variations(const std::string& text) {
+    std::string result;
+    result.reserve(text.size());
+    int brace_depth = 0;  // {...} comments
+    int paren_depth = 0;  // (...) variations
+    for (char c : text) {
+        if (c == '{') {
+            brace_depth++;
+        } else if (c == '}') {
+            if (brace_depth > 0) brace_depth--;
+        } else if (c == '(') {
+            paren_depth++;
+        } else if (c == ')') {
+            if (paren_depth > 0) paren_depth--;
+        } else if (brace_depth == 0 && paren_depth == 0) {
+            result += c;
+        }
+    }
+    return result;
+}
+
 class PGNParser {
     std::ifstream& file;
     std::string line;
@@ -286,10 +309,14 @@ public:
             move_text += " " + line;
         }
 
+        // Strip all {comments} and (variations) before tokenizing
+        std::string clean_text = strip_comments_and_variations(move_text);
+
         // Tokenize moves
-        std::istringstream iss(move_text);
+        std::istringstream iss(clean_text);
         std::string token;
         while (iss >> token) {
+            // Skip move numbers (e.g., "1.", "12.", "1...")
             if (!token.empty() && (std::isdigit(token[0]) || token[0] == '.')) {
                 bool is_number = true;
                 for (char c : token) {
@@ -301,18 +328,20 @@ public:
                 if (is_number) continue;
             }
 
+            // Skip game result markers
             if (token == "1-0" || token == "0-1" || token == "1/2-1/2" || token == "*") {
                 continue;
             }
 
-            if (token[0] == '{') {
-                while (!token.empty() && token.back() != '}' && iss >> token) {}
-                continue;
-            }
-
+            // Skip NAG annotations ($1, $2, etc.) and standalone annotation symbols
             if (token[0] == '$' || token == "!" || token == "?" ||
                 token == "!!" || token == "??" || token == "!?" || token == "?!") {
                 continue;
+            }
+
+            // Strip trailing annotation symbols (!, ?, !!, ??, !?, ?!) from moves
+            while (token.size() > 1 && (token.back() == '!' || token.back() == '?')) {
+                token.pop_back();
             }
 
             game.moves.push_back(token);
@@ -573,27 +602,32 @@ struct Config {
     double K = 400.0;
     double learning_rate = 300.0;
     int epochs = 1000;
-    int min_elo = 2200;
+    int min_elo = 2400;
     int min_time = 180;
     int skip_moves = 8;
     int max_games = 1000000;
     int max_positions = 0;
+    int min_moves = 30;        // Minimum total moves in game (half-moves / 2)
+    bool decisive_only = true; // Only use decisive games (1-0 or 0-1)
     bool verbose = false;
 };
 
 void print_usage(const char* prog) {
     std::cerr << "Usage: " << prog << " <input.pgn> [options]\n"
               << "Options:\n"
-              << "  -o <file>         Output file (default: stdout)\n"
-              << "  -K <value>        Sigmoid scaling factor (default: 400)\n"
-              << "  -lr <value>       Learning rate (default: 300)\n"
-              << "  -epochs <n>       Number of epochs (default: 1000)\n"
-              << "  -min-elo <n>      Minimum average rating (default: 2200)\n"
-              << "  -min-time <s>     Minimum initial time in seconds (default: 180)\n"
-              << "  -skip <n>         Skip first N moves per side (default: 8)\n"
-              << "  -max-games <n>    Maximum games to process (default: 1000000)\n"
-              << "  -max-pos <n>      Maximum positions to use (default: unlimited)\n"
-              << "  -v                Verbose output\n";
+              << "  -o <file>           Output file (default: stdout)\n"
+              << "  -K <value>          Sigmoid scaling factor (default: 400)\n"
+              << "  -lr <value>         Learning rate (default: 300)\n"
+              << "  -epochs <n>         Number of epochs (default: 1000)\n"
+              << "  -min-elo <n>        Minimum average rating (default: 2400)\n"
+              << "  -min-time <s>       Minimum initial time in seconds (default: 180)\n"
+              << "  -min-moves <n>      Minimum moves in game (default: 30)\n"
+              << "  -skip <n>           Skip first N moves per side (default: 8)\n"
+              << "  -max-games <n>      Maximum games to process (default: 1000000)\n"
+              << "  -max-pos <n>        Maximum positions to use (default: unlimited)\n"
+              << "  -decisive-only      Only use decisive games, no draws (default)\n"
+              << "  -no-decisive-only   Include draws in training data\n"
+              << "  -v                  Verbose output\n";
 }
 
 Config parse_args(int argc, char* argv[]) {
@@ -624,6 +658,12 @@ Config parse_args(int argc, char* argv[]) {
             cfg.max_games = std::stoi(argv[++i]);
         } else if (strcmp(argv[i], "-max-pos") == 0 && i + 1 < argc) {
             cfg.max_positions = std::stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-min-moves") == 0 && i + 1 < argc) {
+            cfg.min_moves = std::stoi(argv[++i]);
+        } else if (strcmp(argv[i], "-decisive-only") == 0) {
+            cfg.decisive_only = true;
+        } else if (strcmp(argv[i], "-no-decisive-only") == 0) {
+            cfg.decisive_only = false;
         } else if (strcmp(argv[i], "-v") == 0) {
             cfg.verbose = true;
         } else {
@@ -649,11 +689,12 @@ int parse_time_control(const std::string& tc) {
 }
 
 bool passes_filter(const PGNGame& game, const Config& cfg) {
+    // TimeControl is optional - only check if present and min_time > 0
     auto tc_it = game.headers.find("TimeControl");
-    if (tc_it == game.headers.end()) return false;
-
-    int initial_time = parse_time_control(tc_it->second);
-    if (initial_time < cfg.min_time) return false;
+    if (cfg.min_time > 0 && tc_it != game.headers.end()) {
+        int initial_time = parse_time_control(tc_it->second);
+        if (initial_time < cfg.min_time) return false;
+    }
 
     auto white_elo = game.headers.find("WhiteElo");
     auto black_elo = game.headers.find("BlackElo");
@@ -672,6 +713,13 @@ bool passes_filter(const PGNGame& game, const Config& cfg) {
     if (result_it == game.headers.end()) return false;
     const std::string& result = result_it->second;
     if (result != "1-0" && result != "0-1" && result != "1/2-1/2") return false;
+
+    // Check for decisive games only (if enabled)
+    if (cfg.decisive_only && result == "1/2-1/2") return false;
+
+    // Check minimum moves (game.moves.size() is half-moves, divide by 2 for full moves)
+    int full_moves = static_cast<int>(game.moves.size()) / 2;
+    if (full_moves < cfg.min_moves) return false;
 
     return true;
 }
@@ -1440,7 +1488,9 @@ int main(int argc, char* argv[]) {
     std::cerr << "  Epochs: " << cfg.epochs << "\n";
     std::cerr << "  Min Elo: " << cfg.min_elo << "\n";
     std::cerr << "  Min time: " << cfg.min_time << "s\n";
+    std::cerr << "  Min moves: " << cfg.min_moves << "\n";
     std::cerr << "  Skip moves: " << cfg.skip_moves << "\n";
+    std::cerr << "  Decisive only: " << (cfg.decisive_only ? "yes" : "no") << "\n";
     std::cerr << "\n";
 
     // Load and filter games
