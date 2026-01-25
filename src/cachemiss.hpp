@@ -91,6 +91,8 @@ constexpr char piece_to_char(Piece p) {
 
 // Phase values for tapered evaluation (Knight=1, Bishop=1, Rook=2, Queen=4)
 // Max phase = 24 (2*1 + 2*1 + 2*2 + 2*4) * 2 = 24
+constexpr int MAX_PHASE = 24;
+
 constexpr int PHASE_VALUES[] = {
     0,  // Pawn
     1,  // Knight

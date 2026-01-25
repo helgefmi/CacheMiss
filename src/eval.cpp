@@ -164,7 +164,7 @@ static void evaluate_pieces(const Board& board, int& mg, int& eg, Bitboard attac
 
             Bitboard att = KNIGHT_MOVES[sq];
             attacks[c] |= att;
-            int mob = popcount(att & ~friendly & ~enemy_pawn_att);
+            int mob = std::min(popcount(att & ~friendly & ~enemy_pawn_att), 8);
             mg += sign * MOBILITY_KNIGHT_MG[mob];
             eg += sign * MOBILITY_KNIGHT_EG[mob];
 
@@ -327,8 +327,8 @@ int evaluate(const Board& board) {
     evaluate_king_safety(board, mg_score, eg_score, attacks);
 
     // Interpolate between middlegame and endgame using incremental phase
-    int phase = std::min(board.phase, 24);
-    int score = (mg_score * phase + eg_score * (24 - phase)) / 24;
+    int phase = std::min(board.phase, MAX_PHASE);
+    int score = (mg_score * phase + eg_score * (MAX_PHASE - phase)) / MAX_PHASE;
 
     return (board.turn == Color::White) ? score : -score;
 }

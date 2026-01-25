@@ -1,5 +1,6 @@
 #include "uci.hpp"
 #include "board.hpp"
+#include "eval.hpp"
 #include "move.hpp"
 #include "search.hpp"
 #include "ttable.hpp"
@@ -171,13 +172,18 @@ GoParams parse_go_command(const std::string& line, const Board& board, int moves
 
     // For infinite or ponder, use very long time but remember normal_time for ponderhit
     if (infinite) {
-        return {999999999, 999999999, false};
+        return {999999999, 999999999, depth, false};
     }
     if (is_ponder) {
-        return {999999999, normal_time, true};  // Long time for ponder, but save normal time
+        return {999999999, normal_time, depth, true};  // Long time for ponder, but save normal time
     }
 
-    return {normal_time, normal_time, false};
+    // If only depth specified, use very long time
+    if (depth > 0 && movetime == 0 && wtime == 0 && btime == 0) {
+        return {999999999, 999999999, depth, false};
+    }
+
+    return {normal_time, normal_time, depth, false};
 }
 
 // Parse "setoption name <name> value <value>"
@@ -232,7 +238,7 @@ static void output_bestmove(const Board& board) {
     std::lock_guard<std::mutex> lock(result_mutex);
     std::cout << "bestmove " << last_result.best_move.to_uci();
 
-    if (last_result.pv_length >= 2) {
+    if (ponder_enabled && last_result.pv_length >= 2) {
         // Validate ponder move is legal in position after best_move
         Board ponder_board = board;
         make_move(ponder_board, last_result.pv[0]);
@@ -326,8 +332,8 @@ static bool handle_go_command(const std::string& line, Board& board, TTable& tt)
     search_running.store(true, std::memory_order_relaxed);
     search_start_time = std::chrono::steady_clock::now();
 
-    std::thread search_thread([&board, &tt, time_ms = params.time_ms]() {
-        SearchResult result = search(board, tt, time_ms);
+    std::thread search_thread([&board, &tt, time_ms = params.time_ms, depth_limit = params.depth_limit]() {
+        SearchResult result = search(board, tt, time_ms, depth_limit);
         {
             std::lock_guard<std::mutex> lock(result_mutex);
             last_result = result;
@@ -377,6 +383,7 @@ void uci_loop(size_t hash_mb) {
         }
         else if (cmd == "ucinewgame") {
             tt.clear();
+            g_pawn_cache.clear();
             board = Board();
             moves_played = 0;
         }

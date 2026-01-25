@@ -38,7 +38,7 @@ u64 perft(Board& board, int depth, PerftTable* tt) {
     if (depth == 0) return 1;
 
     u64 nodes = 0;
-    if (tt->probe(board.hash, depth, nodes)) {
+    if (tt && tt->probe(board.hash, depth, nodes)) {
         return nodes;
     }
 
@@ -52,7 +52,7 @@ u64 perft(Board& board, int depth, PerftTable* tt) {
     }
 
     // Store in TT
-    tt->store(board.hash, depth, nodes);
+    if (tt) tt->store(board.hash, depth, nodes);
 
     return nodes;
 }

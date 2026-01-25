@@ -41,7 +41,9 @@ public:
     // Prefetch entry for given hash into cache.
     // Call early, then do other work, then call probe().
     void prefetch(u64 hash) const {
+#ifdef __GNUC__
         __builtin_prefetch(&table[hash & mask], 0, 0);
+#endif
     }
 
     // Probe the TT. Returns true if entry can be used for cutoff.

@@ -315,11 +315,11 @@ static bool in_check(const Board& board) {
 // Check if current position is a repetition of an earlier position
 // Only checks positions with same side to move (every 2nd ply)
 // Bounded by halfmove_clock since captures/pawn moves reset repetition possibility
+// Also bounded by undo_sp to avoid checking beyond available history
 static bool is_repetition(const Board& board) {
-    int limit = board.halfmove_clock;
+    int limit = std::min((int)board.halfmove_clock, board.undo_sp);
     for (int i = 2; i <= limit; i += 2) {
         int idx = board.undo_sp - i;
-        if (idx < 0) break;
         if (board.undo_stack[idx].hash == board.hash) {
             return true;
         }
@@ -622,7 +622,7 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     return best_score;
 }
 
-SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
+SearchResult search(Board& board, TTable& tt, int time_limit_ms, int depth_limit) {
     SearchContext ctx(board, tt, time_limit_ms);
 
     SearchResult result;
@@ -631,7 +631,8 @@ SearchResult search(Board& board, TTable& tt, int time_limit_ms) {
     result.depth = 0;
     result.pv_length = 0;
 
-    for (int depth = 1; depth <= MAX_PLY; ++depth) {
+    int max_depth = (depth_limit > 0) ? depth_limit : MAX_PLY;
+    for (int depth = 1; depth <= max_depth; ++depth) {
         int alpha, beta, delta;
 
         // Aspiration windows: use narrow window around previous score after depth 1

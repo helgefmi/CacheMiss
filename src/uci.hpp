@@ -16,6 +16,7 @@ void uci_loop(size_t hash_mb = 512);
 struct GoParams {
     int time_ms;           // Time to pass to search (infinite if pondering)
     int normal_time_ms;    // Time we'd use for a normal search (for ponderhit)
+    int depth_limit;       // Max depth to search (0 = unlimited)
     bool is_ponder;
 };
 

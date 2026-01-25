@@ -60,5 +60,5 @@ struct SearchResult {
 };
 
 // Search for the best move with iterative deepening.
-// Stops after time_limit_ms milliseconds.
-SearchResult search(Board& board, TTable& tt, int time_limit_ms = 10000);
+// Stops after time_limit_ms milliseconds or depth_limit (0 = unlimited).
+SearchResult search(Board& board, TTable& tt, int time_limit_ms = 10000, int depth_limit = 0);
