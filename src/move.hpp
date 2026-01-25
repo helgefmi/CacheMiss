@@ -126,6 +126,10 @@ bool is_illegal(const Board& board);
 // Static Exchange Evaluation - compute material outcome of capture sequences
 int see(const Board& board, const Move32& move);
 
+// SEE threshold check with early exit optimization
+// Returns true if see(board, move) >= threshold
+bool see_ge(const Board& board, const Move32& move, int threshold);
+
 // Approximate hash after a move (for TT prefetching)
 // Doesn't handle EP file or castling rights changes (OK for prefetch purposes)
 inline u64 approx_hash_after_move(const Board& board, const Move32& move) {

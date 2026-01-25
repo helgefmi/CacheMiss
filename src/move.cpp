@@ -650,6 +650,112 @@ int see(const Board& board, const Move32& move) {
     return gain[0];
 }
 
+// SEE threshold check with early exit optimization
+// Returns true if see(board, move) >= threshold
+bool see_ge(const Board& board, const Move32& move, int threshold) {
+    int to_sq = move.to();
+    int from_sq = move.from();
+
+    Piece captured = move.captured();
+    Piece attacker = board.pieces_on_square[from_sq];
+
+    // Quick exit for non-captures (and non-promotions)
+    if (captured == Piece::None && !move.is_promotion()) {
+        return threshold <= 0;
+    }
+
+    // Initial swap: what we gain from the capture
+    int swap = SEE_VALUES[(int)captured];
+
+    // Handle promotion: add promotion bonus
+    if (move.is_promotion()) {
+        swap += SEE_VALUES[(int)move.promotion()] - SEE_VALUES[(int)Piece::Pawn];
+        attacker = move.promotion();  // After promotion, this piece sits on to_sq
+    }
+
+    // If even this initial gain doesn't meet threshold, fail fast
+    swap -= threshold;
+    if (swap < 0) return false;
+
+    // What we lose if opponent recaptures
+    swap = SEE_VALUES[(int)attacker] - swap;
+    // If even with recapture we're fine, succeed fast
+    if (swap <= 0) return true;
+
+    // Set up occupancy for iterative exchange
+    Bitboard occ = board.all_occupied ^ square_bb(from_sq) ^ square_bb(to_sq);
+
+    // Handle en passant: remove captured pawn from occupancy
+    if (move.is_en_passant()) {
+        int ep_sq = (board.turn == Color::White) ? to_sq - 8 : to_sq + 8;
+        occ ^= square_bb(ep_sq);
+    }
+
+    // Get all attackers to this square
+    Bitboard bishops = board.pieces[0][(int)Piece::Bishop] | board.pieces[1][(int)Piece::Bishop];
+    Bitboard rooks   = board.pieces[0][(int)Piece::Rook]   | board.pieces[1][(int)Piece::Rook];
+    Bitboard queens  = board.pieces[0][(int)Piece::Queen]  | board.pieces[1][(int)Piece::Queen];
+
+    Bitboard attackers = (PAWN_ATTACKS[(int)Color::Black][to_sq] & board.pieces[(int)Color::White][(int)Piece::Pawn])
+                       | (PAWN_ATTACKS[(int)Color::White][to_sq] & board.pieces[(int)Color::Black][(int)Piece::Pawn])
+                       | (KNIGHT_MOVES[to_sq] & (board.pieces[0][(int)Piece::Knight] | board.pieces[1][(int)Piece::Knight]))
+                       | (KING_MOVES[to_sq] & (board.pieces[0][(int)Piece::King] | board.pieces[1][(int)Piece::King]))
+                       | (get_bishop_attacks(to_sq, occ) & (bishops | queens))
+                       | (get_rook_attacks(to_sq, occ) & (rooks | queens));
+
+    attackers &= occ;
+
+    Color side = opposite(board.turn);  // Opponent moves next
+    int result = 1;  // Assume attacker wins initially
+
+    // Negamax exchange loop with stand-pat pruning
+    while (true) {
+        // Find least valuable attacker for current side
+        Bitboard side_attackers = attackers & board.occupied[(int)side];
+        if (!side_attackers) break;
+
+        // Toggle result BEFORE computing swap (key to correct stand-pat logic)
+        result ^= 1;
+
+        // Get LVA (least valuable attacker)
+        Piece lva = Piece::None;
+        int attacker_sq = -1;
+        for (int pt = 0; pt <= 5; pt++) {
+            Bitboard candidates = side_attackers & board.pieces[(int)side][pt];
+            if (candidates) {
+                attacker_sq = lsb_index(candidates);
+                lva = (Piece)pt;
+                break;
+            }
+        }
+        if (lva == Piece::None) break;
+
+        // Update swap value: what this side stands to lose if exchange continues
+        swap = SEE_VALUES[(int)lva] - swap;
+
+        // Stand-pat pruning: if swap <= 0, current side wouldn't benefit from continuing
+        // Since result was already toggled, breaking here gives correct winner
+        if (swap <= 0) break;
+
+        // Update occupancy
+        occ ^= square_bb(attacker_sq);
+
+        // X-ray: discover new slider attackers
+        if (lva == Piece::Pawn || lva == Piece::Bishop || lva == Piece::Queen) {
+            attackers |= get_bishop_attacks(to_sq, occ) & (bishops | queens);
+        }
+        if (lva == Piece::Rook || lva == Piece::Queen) {
+            attackers |= get_rook_attacks(to_sq, occ) & (rooks | queens);
+        }
+
+        attackers &= occ;
+        side = opposite(side);
+    }
+
+    // result == 1 means original attacker wins (SEE >= threshold)
+    return result == 1;
+}
+
 std::string Move32::to_uci() const {
     int from_sq = from();
     int to_sq = to();

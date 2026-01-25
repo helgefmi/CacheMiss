@@ -266,16 +266,19 @@ private:
         int score = 0;
 
         if (move.is_capture()) {
-            int see_value = see(ctx.board, move);
-            if (see_value >= 0) {
+            // Use see_ge for threshold check (faster than full see() computation)
+            if (see_ge(ctx.board, move, 0)) {
                 // Good capture: score 15000+ (above quiets)
                 // Add MVV-LVA tiebreaker within good captures
                 int victim = MVV_LVA_VALUES[(int)move.captured()];
                 int attacker = MVV_LVA_VALUES[(int)ctx.board.pieces_on_square[move.from()]];
                 score = 15000 + victim * 10 - attacker;
             } else {
-                // Bad capture: negative score (below quiets)
-                score = see_value;
+                // Bad capture: use MVV-LVA as score (below quiets)
+                // We avoid full see() computation here since exact value isn't needed
+                int victim = MVV_LVA_VALUES[(int)move.captured()];
+                int attacker = MVV_LVA_VALUES[(int)ctx.board.pieces_on_square[move.from()]];
+                score = victim - attacker - 10000;  // Negative, below quiets
             }
         }
 
@@ -530,7 +533,7 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
         // SEE pruning: at shallow depths, skip captures that lose significant material
         // Don't prune: at root, when in check, promotions (too valuable)
         if (!is_root && depth <= 2 && !in_chk && move.is_capture() && !move.is_promotion()) {
-            if (see(ctx.board, move) < -100) {  // Losing more than a pawn
+            if (!see_ge(ctx.board, move, -100)) {  // Losing more than a pawn
                 continue;
             }
         }

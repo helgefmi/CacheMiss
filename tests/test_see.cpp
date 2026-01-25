@@ -195,6 +195,121 @@ static void test_see_bad_bishop_trade() {
     ASSERT_EQ(result, SEE_PAWN - SEE_BISHOP);
 }
 
+// ============================================================================
+// SEE Threshold (see_ge) Tests
+// ============================================================================
+
+static void test_see_ge_pawn_takes_queen() {
+    // Pawn can capture undefended queen
+    Board board("8/8/8/3q4/4P3/8/8/K6k w - - 0 1");
+    auto move = find_move(board, E4, D5);
+    ASSERT_TRUE(move);
+
+    // SEE = 900 (queen value)
+    ASSERT_TRUE(see_ge(board, move, 0));      // 900 >= 0
+    ASSERT_TRUE(see_ge(board, move, 100));    // 900 >= 100
+    ASSERT_TRUE(see_ge(board, move, 900));    // 900 >= 900
+    ASSERT_FALSE(see_ge(board, move, 901));   // 900 >= 901 -> false
+}
+
+static void test_see_ge_losing_capture() {
+    // Queen takes pawn defended by pawn - bad trade
+    Board board("8/8/2p5/3p4/4Q3/8/8/K6k w - - 0 1");
+    auto move = find_move(board, E4, D5);
+    ASSERT_TRUE(move);
+
+    // SEE = 100 - 900 = -800
+    ASSERT_FALSE(see_ge(board, move, 0));     // -800 >= 0 -> false
+    ASSERT_FALSE(see_ge(board, move, -100));  // -800 >= -100 -> false
+    ASSERT_TRUE(see_ge(board, move, -800));   // -800 >= -800
+    ASSERT_TRUE(see_ge(board, move, -900));   // -800 >= -900
+}
+
+static void test_see_ge_equal_trade() {
+    // Knight takes defended knight
+    Board board("3n4/8/4n3/8/3N4/8/8/K6k w - - 0 1");
+    auto move = find_move(board, D4, E6);
+    ASSERT_TRUE(move);
+
+    // SEE = 0 (equal trade)
+    ASSERT_TRUE(see_ge(board, move, 0));      // 0 >= 0
+    ASSERT_TRUE(see_ge(board, move, -1));     // 0 >= -1
+    ASSERT_FALSE(see_ge(board, move, 1));     // 0 >= 1 -> false
+}
+
+static void test_see_ge_threshold_100() {
+    // Rook takes knight defended by pawn
+    Board board("8/8/5p2/4n3/8/8/8/K3R2k w - - 0 1");
+    auto move = find_move(board, E1, E5);
+    ASSERT_TRUE(move);
+
+    // SEE = 320 - 500 = -180
+    ASSERT_FALSE(see_ge(board, move, -100));  // -180 >= -100 -> false (used in shallow SEE pruning)
+    ASSERT_TRUE(see_ge(board, move, -180));   // -180 >= -180
+    ASSERT_TRUE(see_ge(board, move, -200));   // -180 >= -200
+}
+
+static void test_see_ge_promotion() {
+    // Pawn promotes while capturing defended rook
+    Board board("rr6/P7/8/8/8/8/8/K6k w - - 0 1");
+    auto move = find_move(board, A7, B8, Piece::Queen);
+    ASSERT_TRUE(move);
+
+    // SEE = 500 + (900 - 100) - 900 = 400
+    ASSERT_TRUE(see_ge(board, move, 0));
+    ASSERT_TRUE(see_ge(board, move, 400));
+    ASSERT_FALSE(see_ge(board, move, 401));
+}
+
+static void test_see_ge_en_passant() {
+    // En passant capture
+    Board board("8/8/8/3Pp3/8/8/8/K6k w - e6 0 1");
+    auto move = find_move(board, D5, E6);
+    ASSERT_TRUE(move);
+    ASSERT_TRUE(move.is_en_passant());
+
+    // SEE = 100 (pawn capture)
+    ASSERT_TRUE(see_ge(board, move, 0));
+    ASSERT_TRUE(see_ge(board, move, 100));
+    ASSERT_FALSE(see_ge(board, move, 101));
+}
+
+static void test_see_ge_non_capture() {
+    // Non-capture, non-promotion move
+    Board board("8/8/8/8/4N3/8/8/K6k w - - 0 1");
+    auto move = find_move(board, E4, D6);  // Knight quiet move
+    ASSERT_TRUE(move);
+
+    // SEE = 0 (no capture, no promotion)
+    ASSERT_TRUE(see_ge(board, move, 0));
+    ASSERT_TRUE(see_ge(board, move, -100));
+    ASSERT_FALSE(see_ge(board, move, 1));
+}
+
+static void test_see_ge_consistency() {
+    // Test that see_ge gives same result as see() >= threshold for various positions
+    const char* fens[] = {
+        "r2qkb1r/pp2pppp/2n2n2/2ppPb2/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq d6 0 6",
+        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+        "rnbqkb1r/pp1p1ppp/4pn2/2p5/2PP4/5N2/PP2PPPP/RNBQKB1R w KQkq - 0 4",
+    };
+
+    int thresholds[] = { -500, -100, 0, 100, 500 };
+
+    for (const char* fen : fens) {
+        Board board(fen);
+        auto moves = generate_moves(board);
+        for (int i = 0; i < moves.size; i++) {
+            int see_value = see(board, moves[i]);
+            for (int thresh : thresholds) {
+                bool expected = (see_value >= thresh);
+                bool actual = see_ge(board, moves[i], thresh);
+                ASSERT_EQ(actual, expected);
+            }
+        }
+    }
+}
+
 // Registration function
 void register_see_tests() {
     REGISTER_TEST(SEE, PawnTakesQueen, test_see_pawn_takes_queen);
@@ -210,4 +325,14 @@ void register_see_tests() {
     REGISTER_TEST(SEE, PawnTakesDefendedRook, test_see_pawn_takes_defended_rook);
     REGISTER_TEST(SEE, BishopTakesBishop, test_see_bishop_takes_bishop);
     REGISTER_TEST(SEE, BadBishopTrade, test_see_bad_bishop_trade);
+
+    // SEE threshold (see_ge) tests
+    REGISTER_TEST(SEE, SeeGe_PawnTakesQueen, test_see_ge_pawn_takes_queen);
+    REGISTER_TEST(SEE, SeeGe_LosingCapture, test_see_ge_losing_capture);
+    REGISTER_TEST(SEE, SeeGe_EqualTrade, test_see_ge_equal_trade);
+    REGISTER_TEST(SEE, SeeGe_Threshold100, test_see_ge_threshold_100);
+    REGISTER_TEST(SEE, SeeGe_Promotion, test_see_ge_promotion);
+    REGISTER_TEST(SEE, SeeGe_EnPassant, test_see_ge_en_passant);
+    REGISTER_TEST(SEE, SeeGe_NonCapture, test_see_ge_non_capture);
+    REGISTER_TEST(SEE, SeeGe_Consistency, test_see_ge_consistency);
 }
