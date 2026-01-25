@@ -3,6 +3,7 @@
 #include "cachemiss.hpp"
 #include "board.hpp"
 #include "magic_tables.hpp"
+#include "zobrist.hpp"
 #include <string>
 
 // Attack generation using magic bitboards
@@ -124,3 +125,49 @@ bool is_illegal(const Board& board);
 
 // Static Exchange Evaluation - compute material outcome of capture sequences
 int see(const Board& board, const Move32& move);
+
+// Approximate hash after a move (for TT prefetching)
+// Doesn't handle EP file or castling rights changes (OK for prefetch purposes)
+inline u64 approx_hash_after_move(const Board& board, const Move32& move) {
+    const int from = move.from();
+    const int to = move.to();
+    const Color turn = board.turn;
+    const Color enemy = opposite(turn);
+    const Piece piece = board.pieces_on_square[from];
+    const Piece captured = move.captured();
+    const Piece promotion = move.promotion();
+    const Piece to_piece = (promotion != Piece::None) ? promotion : piece;
+
+    // Start with current hash and flip side to move
+    u64 h = board.hash ^ zobrist::side_to_move;
+
+    // Move the piece
+    h ^= zobrist::pieces[(int)turn][(int)piece][from];
+    h ^= zobrist::pieces[(int)turn][(int)to_piece][to];
+
+    // Handle capture
+    if (captured != Piece::None) {
+        if (move.is_en_passant()) {
+            int ep_sq = (turn == Color::White) ? to - 8 : to + 8;
+            h ^= zobrist::pieces[(int)enemy][(int)Piece::Pawn][ep_sq];
+        } else {
+            h ^= zobrist::pieces[(int)enemy][(int)captured][to];
+        }
+    }
+
+    // Handle castling rook
+    if (move.is_castling()) {
+        // Determine rook from/to based on king destination
+        int rook_from, rook_to;
+        switch (to) {
+            case 6:  rook_from = 7;  rook_to = 5;  break;  // G1: H1->F1
+            case 2:  rook_from = 0;  rook_to = 3;  break;  // C1: A1->D1
+            case 62: rook_from = 63; rook_to = 61; break;  // G8: H8->F8
+            default: rook_from = 56; rook_to = 59; break;  // C8: A8->D8
+        }
+        h ^= zobrist::pieces[(int)turn][(int)Piece::Rook][rook_from];
+        h ^= zobrist::pieces[(int)turn][(int)Piece::Rook][rook_to];
+    }
+
+    return h;  // Note: EP file & castling rights changes ignored (OK for prefetch)
+}

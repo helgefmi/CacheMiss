@@ -1,6 +1,6 @@
 build/
 build-release/
-build_profile/
+build-profile/
 builds/
 .cache/
 compile_commands.json

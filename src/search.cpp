@@ -181,11 +181,33 @@ struct MovePicker {
     std::array<int, MoveList::MAX_MOVES> move_scores;
     bool scores_computed = false;
 
+    // Peek support for TT prefetching
+    Move32 peeked_move{0};
+    bool has_peeked = false;
+
     MovePicker(SearchContext& ctx, int ply, Move32 tt_move, Move32 prev_best = Move32(0))
         : ctx(ctx), ply(ply), tt_move(tt_move), prev_best(prev_best),
           stage(TT_MOVE), index(0) {}
 
+    // Peek at the next move without consuming it
+    Move32 peek() {
+        if (!has_peeked) {
+            peeked_move = next_internal();
+            has_peeked = true;
+        }
+        return peeked_move;
+    }
+
     Move32 next() {
+        if (has_peeked) {
+            has_peeked = false;
+            return peeked_move;
+        }
+        return next_internal();
+    }
+
+private:
+    Move32 next_internal() {
         switch (stage) {
         case TT_MOVE:
             stage = PREV_BEST;
@@ -582,6 +604,11 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
         }
 
         unmake_move(ctx.board, move);
+
+        // Prefetch next sibling's TT entry while processing results
+        if (Move32 next_move = picker.peek(); next_move.data != 0) {
+            ctx.tt.prefetch(approx_hash_after_move(ctx.board, next_move));
+        }
 
         if (ctx.stop_search) {
             // At root, use partial result if we have one
