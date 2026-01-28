@@ -36,9 +36,6 @@ constexpr int LMR_MIN_DEPTH = 3;              // Minimum depth to apply LMR
 constexpr int LMR_PV_REDUCTION = 1;           // Reduce LMR by this amount in PV nodes
 constexpr int LMR_MIN_REDUCED_DEPTH = 1;      // Never reduce below this depth
 
-// Pawn double push detection
-constexpr int PAWN_DOUBLE_PUSH_DIFF = 16;     // Square difference for double pawn push
-
 // LMR (Late Move Reduction) table
 // Indexed by [depth][move_count], values are reduction amounts
 constexpr int LMR_MAX_DEPTH = 64;
