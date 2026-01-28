@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 
 // Trim trailing whitespace and carriage returns (handles CRLF line endings)
 static std::string trim_right(const std::string& s) {
@@ -161,6 +162,16 @@ GoParams parse_go_command(const std::string& line, const Board& board, int moves
 
             // Time = base allocation + most of increment
             time_for_move = our_time / moves_remaining + our_inc * 3 / 4;
+
+            // Adjust based on opponent's time - use more time if we have a time advantage
+            int opp_time = (board.turn == Color::White) ? btime : wtime;
+            if (opp_time > 0 && our_time > 0) {
+                // sqrt provides diminishing returns: 4x advantage → 2x multiplier
+                double ratio = std::sqrt((double)our_time / opp_time);
+                // Clamp to [0.7, 1.5] to prevent extreme behavior
+                ratio = std::clamp(ratio, 0.7, 1.5);
+                time_for_move = (int)(time_for_move * ratio);
+            }
 
             // Safety bounds
             if (time_for_move < 10) time_for_move = 10;

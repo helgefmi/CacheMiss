@@ -170,6 +170,42 @@ static void test_go_time_max_bound() {
 }
 
 // ============================================================================
+// Time Advantage Tests
+// ============================================================================
+
+static void test_go_time_advantage() {
+    Board board;
+    // We have 2x opponent's time
+    GoParams params = parse_go_command("go wtime 60000 btime 30000", board, 0, 100);
+    GoParams baseline = parse_go_command("go wtime 60000 btime 60000", board, 0, 100);
+
+    // Should use more time when we have advantage (sqrt(2) ≈ 1.41x)
+    ASSERT_GT(params.time_ms, baseline.time_ms);
+    ASSERT_LT(params.time_ms, baseline.time_ms * 2);  // But not unlimited
+}
+
+static void test_go_time_disadvantage() {
+    Board board;
+    // We have half opponent's time
+    GoParams params = parse_go_command("go wtime 30000 btime 60000", board, 0, 100);
+    GoParams baseline = parse_go_command("go wtime 30000 btime 30000", board, 0, 100);
+
+    // Should use less time when opponent has advantage
+    ASSERT_LT(params.time_ms, baseline.time_ms);
+    ASSERT_GT(params.time_ms, baseline.time_ms / 2);  // But not too little
+}
+
+static void test_go_extreme_time_advantage() {
+    Board board;
+    // We have 10x opponent's time - should cap at 1.5x multiplier
+    GoParams params = parse_go_command("go wtime 100000 btime 10000", board, 0, 100);
+    GoParams baseline = parse_go_command("go wtime 100000 btime 100000", board, 0, 100);
+
+    // Multiplier should be capped (not sqrt(10) ≈ 3.16x)
+    ASSERT_LE(params.time_ms, baseline.time_ms * 2);
+}
+
+// ============================================================================
 // Ponderhit Tests
 // ============================================================================
 
@@ -216,6 +252,10 @@ void register_uci_tests() {
     REGISTER_TEST(UCI, GoCriticalTime, test_go_critical_time);
     REGISTER_TEST(UCI, GoVeryLowTime, test_go_very_low_time);
     REGISTER_TEST(UCI, GoTimeMaxBound, test_go_time_max_bound);
+
+    REGISTER_TEST(UCI, GoTimeAdvantage, test_go_time_advantage);
+    REGISTER_TEST(UCI, GoTimeDisadvantage, test_go_time_disadvantage);
+    REGISTER_TEST(UCI, GoExtremeTimeAdvantage, test_go_extreme_time_advantage);
 
     REGISTER_TEST(UCI, PonderhitSetsTime, test_ponderhit_sets_time);
     REGISTER_TEST(UCI, PonderStoresNormalTime, test_ponder_stores_normal_time);
