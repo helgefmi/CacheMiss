@@ -2,6 +2,8 @@
 
 A UCI chess engine written in C++20.
 
+Watch CacheMissBot play at https://lichess.org/@/CacheMissBot from time to time.
+
 ## Features
 
 ### Board Representation
