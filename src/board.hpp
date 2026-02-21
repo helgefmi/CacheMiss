@@ -23,9 +23,6 @@ struct Board {
     u64 hash;      // Zobrist hash
     u64 pawn_key;  // Zobrist hash of pawn positions only (for pawn structure cache)
     int phase;                                      // Game phase (0=endgame, 24=opening) for tapered eval
-    std::array<UndoInfo, 1024> undo_stack;          // Stack for restoration in unmake
-    int undo_sp = 0;                                // Stack pointer
-
     Board() : Board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") {}
     Board(std::string_view fen);
     void print() const;

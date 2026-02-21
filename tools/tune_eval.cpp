@@ -91,12 +91,12 @@ Move32 parse_san_move(const std::string& san, Board& board) {
                 int from_file = m.from() % 8;
                 int to_file = m.to() % 8;
                 if (to_file > from_file) {  // Kingside
-                    make_move(board, m);
+                    UndoInfo undo = make_move(board, m);
                     if (!is_illegal(board)) {
-                        unmake_move(board, m);
+                        unmake_move(board, m, undo);
                         return m;
                     }
-                    unmake_move(board, m);
+                    unmake_move(board, m, undo);
                 }
             }
         }
@@ -111,12 +111,12 @@ Move32 parse_san_move(const std::string& san, Board& board) {
                 int from_file = m.from() % 8;
                 int to_file = m.to() % 8;
                 if (to_file < from_file) {  // Queenside
-                    make_move(board, m);
+                    UndoInfo undo = make_move(board, m);
                     if (!is_illegal(board)) {
-                        unmake_move(board, m);
+                        unmake_move(board, m, undo);
                         return m;
                     }
-                    unmake_move(board, m);
+                    unmake_move(board, m, undo);
                 }
             }
         }
@@ -216,9 +216,9 @@ Move32 parse_san_move(const std::string& san, Board& board) {
             if (m.is_promotion()) continue;
         }
 
-        make_move(board, m);
+        UndoInfo undo = make_move(board, m);
         bool legal = !is_illegal(board);
-        unmake_move(board, m);
+        unmake_move(board, m, undo);
 
         if (legal) {
             return m;
@@ -1091,7 +1091,7 @@ void extract_positions(const PGNGame& game, const Config& cfg,
         Move32 move = parse_san_move(san, board);
         if (move.data == 0) throw std::runtime_error("Invalid SAN move: " + san);
 
-        make_move(board, move);
+        (void)make_move(board, move);
         ply++;
 
         if (ply < cfg.skip_moves * 2) continue;

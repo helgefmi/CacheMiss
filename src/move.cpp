@@ -321,7 +321,7 @@ constexpr u8 CASTLING_MASK[64] = {
     0xB, 0xF, 0xF, 0xF, 0x3, 0xF, 0xF, 0x7   // rank 8: a8=~bQ, e8=~(bQ|bK), h8=~bK
 };
 
-void make_move(Board& board, Move32& move) {
+UndoInfo make_move(Board& board, Move32& move) {
     const int from = move.from();
     const int to = move.to();
     const Piece promotion = move.promotion();
@@ -333,9 +333,7 @@ void make_move(Board& board, Move32& move) {
 
     // Save undo info
     move.set_undo_info(board.castling, board.ep_file);
-    assert(board.undo_sp < 1024 && "Undo stack overflow");
-    board.undo_stack[board.undo_sp] = {board.hash, board.pawn_key, board.halfmove_clock};
-    board.undo_sp++;
+    UndoInfo undo = {board.hash, board.pawn_key, board.halfmove_clock};
 
     // Update halfmove clock (reset on pawn move or capture, otherwise increment)
     if (piece == Piece::Pawn || captured != Piece::None) {
@@ -435,9 +433,10 @@ void make_move(Board& board, Move32& move) {
     }
 
     board.hash = h;
+    return undo;
 }
 
-void unmake_move(Board& board, const Move32& move) {
+void unmake_move(Board& board, const Move32& move, const UndoInfo& undo) {
     const int from = move.from();
     const int to = move.to();
     const Piece promotion = move.promotion();
@@ -501,10 +500,8 @@ void unmake_move(Board& board, const Move32& move) {
         board.pieces[(int)turn][(int)Piece::Rook] &= ~square_bb(rook_to);
     }
 
-    // Update all_occupied and restore hash/halfmove/pawn_key from stack
+    // Update all_occupied and restore hash/halfmove/pawn_key from undo info
     board.all_occupied = board.occupied[0] | board.occupied[1];
-    --board.undo_sp;
-    const UndoInfo& undo = board.undo_stack[board.undo_sp];
     board.hash = undo.hash;
     board.pawn_key = undo.pawn_key;
     board.halfmove_clock = undo.halfmove_clock;
@@ -523,16 +520,9 @@ void make_null_move(Board& b, int& prev_ep_file) {
 
     // Flip turn
     b.turn = opposite(b.turn);
-
-    // Push to stack (for repetition detection)
-    assert(b.undo_sp < 1024 && "Undo stack overflow");
-    b.undo_stack[b.undo_sp++] = {b.hash, b.pawn_key, b.halfmove_clock};
 }
 
 void unmake_null_move(Board& b, int prev_ep_file) {
-    // Pop undo stack
-    --b.undo_sp;
-
     // Restore hash
     b.hash ^= zobrist::side_to_move;
     if (prev_ep_file != 8) {

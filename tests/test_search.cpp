@@ -66,7 +66,7 @@ static void test_checkmate_position() {
     for (int i = 0; i < moves.size; i++) {
         Board copy = board;
         Move32 m = moves[i];
-        make_move(copy, m);
+        (void)make_move(copy, m);
         if (!is_illegal(copy)) {
             legal++;
         }
@@ -94,7 +94,7 @@ static void test_stalemate() {
     for (int i = 0; i < moves.size; i++) {
         Board copy = board;
         Move32 m = moves[i];
-        make_move(copy, m);
+        (void)make_move(copy, m);
         if (!is_illegal(copy)) {
             legal++;
         }
@@ -133,8 +133,8 @@ static void test_repetition_detection() {
     auto moves = generate_moves(board);
     if (moves.size > 0) {
         Move32 m = moves[0];
-        make_move(board, m);
-        unmake_move(board, m);
+        UndoInfo undo = make_move(board, m);
+        unmake_move(board, m, undo);
         ASSERT_EQ(board.hash, initial_hash);
     }
 }
@@ -246,7 +246,7 @@ static void test_pv_is_legal() {
         for (int j = 0; j < legal.size; j++) {
             if (legal[j].same_move(m)) {
                 found = true;
-                make_move(copy, legal[j]);
+                (void)make_move(copy, legal[j]);
                 ASSERT_FALSE(is_illegal(copy));
                 break;
             }

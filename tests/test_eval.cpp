@@ -238,10 +238,10 @@ static void test_phase_after_capture() {
         if (moves[i].is_capture()) {
             int old_phase = board.phase;
             Move32 m = moves[i];
-            make_move(board, m);
+            UndoInfo undo = make_move(board, m);
             // Phase should decrease by captured piece's phase value
             ASSERT_LE(board.phase, old_phase);
-            unmake_move(board, m);
+            unmake_move(board, m, undo);
             ASSERT_EQ(board.phase, old_phase);
             break;
         }

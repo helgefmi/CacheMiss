@@ -15,8 +15,8 @@ static void test_hash_restored_after_unmake() {
     auto moves = generate_moves(board);
     for (int i = 0; i < moves.size && i < 10; i++) {
         Move32 m = moves[i];
-        make_move(board, m);
-        unmake_move(board, m);
+        UndoInfo undo = make_move(board, m);
+        unmake_move(board, m, undo);
 
         ASSERT_EQ(board.hash, original_hash);
     }
@@ -29,25 +29,27 @@ static void test_hash_after_multiple_moves() {
     // Make several moves, then unmake them all
     auto moves = generate_moves(board);
     std::vector<Move32> made_moves;
+    std::vector<UndoInfo> made_undos;
 
     // Make 5 moves
     for (int i = 0; i < 5 && i < moves.size; i++) {
         Move32 m = moves[i];
         // Skip if move leaves king in check
         Board copy = board;
-        make_move(copy, m);
+        (void)make_move(copy, m);
         if (is_illegal(copy)) continue;
 
-        make_move(board, m);
+        UndoInfo undo = make_move(board, m);
         made_moves.push_back(m);
+        made_undos.push_back(undo);
 
         // Generate next set of moves
         moves = generate_moves(board);
     }
 
     // Unmake all moves in reverse order
-    for (auto it = made_moves.rbegin(); it != made_moves.rend(); ++it) {
-        unmake_move(board, *it);
+    for (int i = (int)made_moves.size() - 1; i >= 0; --i) {
+        unmake_move(board, made_moves[i], made_undos[i]);
     }
 
     ASSERT_EQ(board.hash, original_hash);
@@ -66,7 +68,7 @@ static void test_same_position_different_move_order() {
 
     auto parse_and_make = [](Board& b, const char* uci) {
         Move32 m = parse_uci_move(uci, b);
-        make_move(b, m);
+        (void)make_move(b, m);
     };
 
     // Board 1: Nf3, Nc6, Nc3, Nf6
@@ -94,7 +96,7 @@ static void test_transposition_hash_match() {
 
     auto parse_and_make = [](Board& b, const char* uci) {
         Move32 m = parse_uci_move(uci, b);
-        make_move(b, m);
+        (void)make_move(b, m);
     };
 
     // Path 1: d4, Nf6, c4, Nc6
@@ -133,7 +135,7 @@ static void test_ep_hash_cleared_after_move() {
 
     // Make any move that doesn't capture EP
     Move32 m = parse_uci_move("a2a3", board);
-    make_move(board, m);
+    (void)make_move(board, m);
 
     // EP should be cleared
     ASSERT_EQ(board.ep_file, 8);  // No EP
@@ -157,13 +159,13 @@ static void test_castling_changes_hash() {
 
     // Castle kingside
     Move32 m = parse_uci_move("e1g1", board);
-    make_move(board, m);
+    UndoInfo undo = make_move(board, m);
 
     // Hash should change (position changed + castling rights changed)
     ASSERT_NE(board.hash, hash_before);
 
     // After unmake, hash should be restored
-    unmake_move(board, m);
+    unmake_move(board, m, undo);
     ASSERT_EQ(board.hash, hash_before);
 }
 
@@ -172,7 +174,7 @@ static void test_rook_capture_removes_rights() {
 
     // White captures black's a8 rook
     Move32 m = parse_uci_move("a1a8", board);
-    make_move(board, m);
+    (void)make_move(board, m);
 
     // Black should lose queenside castling rights
     ASSERT_EQ(board.castling & 4, 0);  // bit 2 = black queenside
@@ -188,7 +190,7 @@ static void test_pawn_key_only_pawns() {
 
     // Knight move shouldn't change pawn key
     Move32 m = parse_uci_move("g1f3", board);
-    make_move(board, m);
+    (void)make_move(board, m);
 
     ASSERT_EQ(board.pawn_key, initial_pawn_key);
 }
@@ -199,7 +201,7 @@ static void test_pawn_key_changes_on_pawn_move() {
 
     // Pawn move should change pawn key
     Move32 m = parse_uci_move("e2e4", board);
-    make_move(board, m);
+    (void)make_move(board, m);
 
     ASSERT_NE(board.pawn_key, initial_pawn_key);
 }
@@ -209,8 +211,8 @@ static void test_pawn_key_restored_after_unmake() {
     u64 initial_pawn_key = board.pawn_key;
 
     Move32 m = parse_uci_move("e2e4", board);
-    make_move(board, m);
-    unmake_move(board, m);
+    UndoInfo undo = make_move(board, m);
+    unmake_move(board, m, undo);
 
     ASSERT_EQ(board.pawn_key, initial_pawn_key);
 }
@@ -221,7 +223,7 @@ static void test_pawn_capture_changes_pawn_key() {
 
     // exd5 - pawn captures pawn
     Move32 m = parse_uci_move("e4d5", board);
-    make_move(board, m);
+    (void)make_move(board, m);
 
     // Pawn key should change (two pawns removed from original squares, one added)
     ASSERT_NE(board.pawn_key, initial_pawn_key);
@@ -238,7 +240,7 @@ static void test_incremental_vs_computed_hash() {
     const char* moves[] = {"e2e4", "e7e5", "g1f3", "b8c6", "f1b5"};
     for (const char* uci : moves) {
         Move32 m = parse_uci_move(uci, board);
-        make_move(board, m);
+        (void)make_move(board, m);
     }
 
     // Compute hash from scratch
@@ -254,7 +256,7 @@ static void test_hash_after_promotion() {
 
     // Promote pawn
     Move32 m = parse_uci_move("a7a8q", board);
-    make_move(board, m);
+    UndoInfo undo = make_move(board, m);
 
     // Verify incremental hash matches computed
     u64 computed = compute_hash(board);
@@ -264,7 +266,7 @@ static void test_hash_after_promotion() {
     ASSERT_NE(board.hash, hash_before);
 
     // Unmake and verify restoration
-    unmake_move(board, m);
+    unmake_move(board, m, undo);
     ASSERT_EQ(board.hash, hash_before);
 }
 
@@ -274,14 +276,14 @@ static void test_hash_after_en_passant() {
 
     // EP capture
     Move32 m = parse_uci_move("e5d6", board);
-    make_move(board, m);
+    UndoInfo undo = make_move(board, m);
 
     // Verify incremental hash matches computed
     u64 computed = compute_hash(board);
     ASSERT_EQ(board.hash, computed);
 
     // Unmake
-    unmake_move(board, m);
+    unmake_move(board, m, undo);
     ASSERT_EQ(board.hash, hash_before);
 }
 
@@ -291,14 +293,14 @@ static void test_hash_after_castling() {
 
     // Castle kingside
     Move32 m = parse_uci_move("e1g1", board);
-    make_move(board, m);
+    UndoInfo undo = make_move(board, m);
 
     // Verify incremental hash matches computed
     u64 computed = compute_hash(board);
     ASSERT_EQ(board.hash, computed);
 
     // Unmake
-    unmake_move(board, m);
+    unmake_move(board, m, undo);
     ASSERT_EQ(board.hash, hash_before);
 }
 

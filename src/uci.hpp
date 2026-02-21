@@ -3,6 +3,7 @@
 #include "board.hpp"
 #include <cstddef>
 #include <string>
+#include <vector>
 
 // Run the UCI protocol loop
 // hash_mb: size of hash table in megabytes
@@ -26,4 +27,4 @@ GoParams parse_go_command(const std::string& line, const Board& board, int moves
 
 // Parse "position" command and update board state
 // Exposed for testing
-void parse_position_command(const std::string& line, Board& board);
+void parse_position_command(const std::string& line, Board& board, std::vector<u64>& game_hashes);

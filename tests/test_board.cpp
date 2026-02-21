@@ -42,8 +42,8 @@ static void test_unmake_restores_state() {
     auto moves = generate_moves(board);
     for (int i = 0; i < moves.size; i++) {
         Move32 m = moves[i];
-        make_move(board, m);
-        unmake_move(board, m);
+        UndoInfo undo = make_move(board, m);
+        unmake_move(board, m, undo);
 
         ASSERT_TRUE(boards_equal(board, original));
     }
@@ -58,8 +58,8 @@ static void test_unmake_after_capture() {
     for (int i = 0; i < moves.size; i++) {
         if (moves[i].is_capture()) {
             Move32 m = moves[i];
-            make_move(board, m);
-            unmake_move(board, m);
+            UndoInfo undo = make_move(board, m);
+            unmake_move(board, m, undo);
 
             ASSERT_TRUE(boards_equal(board, original));
         }
@@ -75,8 +75,8 @@ static void test_unmake_after_castling() {
     for (int i = 0; i < moves.size; i++) {
         if (moves[i].is_castling()) {
             Move32 m = moves[i];
-            make_move(board, m);
-            unmake_move(board, m);
+            UndoInfo undo = make_move(board, m);
+            unmake_move(board, m, undo);
 
             ASSERT_TRUE(boards_equal(board, original));
         }
@@ -92,8 +92,8 @@ static void test_unmake_after_en_passant() {
     for (int i = 0; i < moves.size; i++) {
         if (moves[i].is_en_passant()) {
             Move32 m = moves[i];
-            make_move(board, m);
-            unmake_move(board, m);
+            UndoInfo undo = make_move(board, m);
+            unmake_move(board, m, undo);
 
             ASSERT_TRUE(boards_equal(board, original));
         }
@@ -108,8 +108,8 @@ static void test_unmake_after_promotion() {
     for (int i = 0; i < moves.size; i++) {
         if (moves[i].is_promotion()) {
             Move32 m = moves[i];
-            make_move(board, m);
-            unmake_move(board, m);
+            UndoInfo undo = make_move(board, m);
+            unmake_move(board, m, undo);
 
             ASSERT_TRUE(boards_equal(board, original));
         }
@@ -124,8 +124,8 @@ static void test_unmake_after_promotion_capture() {
     for (int i = 0; i < moves.size; i++) {
         if (moves[i].is_promotion() && moves[i].is_capture()) {
             Move32 m = moves[i];
-            make_move(board, m);
-            unmake_move(board, m);
+            UndoInfo undo = make_move(board, m);
+            unmake_move(board, m, undo);
 
             ASSERT_TRUE(boards_equal(board, original));
         }
@@ -255,8 +255,8 @@ static void test_phase_after_moves() {
     for (int i = 0; i < moves.size; i++) {
         if (!moves[i].is_capture()) {
             Move32 m = moves[i];
-            make_move(board, m);
-            unmake_move(board, m);
+            UndoInfo undo = make_move(board, m);
+            unmake_move(board, m, undo);
 
             ASSERT_EQ(board.phase, initial_phase);
             break;
@@ -274,13 +274,13 @@ static void test_phase_after_capture() {
             Move32 m = moves[i];
             Piece captured = moves[i].captured();
 
-            make_move(board, m);
+            UndoInfo undo = make_move(board, m);
 
             // Phase should decrease by captured piece's phase value
             int phase_val = PHASE_VALUES[(int)captured];
             ASSERT_EQ(board.phase, initial_phase - phase_val);
 
-            unmake_move(board, m);
+            unmake_move(board, m, undo);
             ASSERT_EQ(board.phase, initial_phase);
             break;
         }

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <vector>
 
 // Trim trailing whitespace and carriage returns (handles CRLF line endings)
 static std::string trim_right(const std::string& s) {
@@ -57,7 +58,7 @@ static bool input_available() {
 // Parse "position" command
 // position startpos [moves e2e4 e7e5 ...]
 // position fen <fen> [moves e2e4 e7e5 ...]
-void parse_position_command(const std::string& line, Board& board) {
+void parse_position_command(const std::string& line, Board& board, std::vector<u64>& game_hashes) {
     std::istringstream iss(line);
     std::string token;
     iss >> token;  // "position"
@@ -82,12 +83,17 @@ void parse_position_command(const std::string& line, Board& board) {
         }
     }
 
+    // Reset hash history with initial position
+    game_hashes.clear();
+    game_hashes.push_back(board.hash);
+
     // Apply moves if present
     if (token == "moves") {
         while (iss >> token) {
             Move32 move = parse_uci_move(token, board);
             if (move.data != 0) {
-                make_move(board, move);
+                game_hashes.push_back(board.hash);
+                (void)make_move(board, move);
             }
         }
     }
@@ -252,13 +258,13 @@ static void output_bestmove(const Board& board) {
     if (ponder_enabled && last_result.pv_length >= 2) {
         // Validate ponder move is legal in position after best_move
         Board ponder_board = board;
-        make_move(ponder_board, last_result.pv[0]);
+        (void)make_move(ponder_board, last_result.pv[0]);
 
         MoveList moves = generate_moves<MoveType::All>(ponder_board);
         bool ponder_valid = false;
         for (int i = 0; i < moves.size; ++i) {
             Board test = ponder_board;
-            make_move(test, moves[i]);
+            (void)make_move(test, moves[i]);
             if (!is_illegal(test) && moves[i].same_move(last_result.pv[1])) {
                 ponder_valid = true;
                 break;
@@ -333,7 +339,8 @@ static bool wait_for_ponder_end(bool& is_pondering) {
 
 // Handle "go" command: start search, poll for commands, output bestmove
 // Returns true if should exit UCI loop (quit received)
-static bool handle_go_command(const std::string& line, Board& board, TTable& tt) {
+static bool handle_go_command(const std::string& line, Board& board, TTable& tt,
+                              const std::vector<u64>& game_hashes) {
     GoParams params = parse_go_command(line, board, moves_played, move_overhead_ms);
     bool is_pondering = params.is_ponder;
     int ponder_time_ms = params.normal_time_ms;
@@ -343,8 +350,9 @@ static bool handle_go_command(const std::string& line, Board& board, TTable& tt)
     search_running.store(true, std::memory_order_relaxed);
     search_start_time = std::chrono::steady_clock::now();
 
-    std::thread search_thread([&board, &tt, time_ms = params.time_ms, depth_limit = params.depth_limit]() {
-        SearchResult result = search(board, tt, time_ms, depth_limit);
+    std::thread search_thread([&board, &tt, time_ms = params.time_ms, depth_limit = params.depth_limit,
+                               hash_data = game_hashes.data(), hash_len = (int)game_hashes.size()]() {
+        SearchResult result = search(board, tt, time_ms, depth_limit, hash_data, hash_len);
         {
             std::lock_guard<std::mutex> lock(result_mutex);
             last_result = result;
@@ -371,6 +379,7 @@ static bool handle_go_command(const std::string& line, Board& board, TTable& tt)
 void uci_loop(size_t hash_mb) {
     Board board;
     TTable tt(hash_mb);
+    std::vector<u64> game_hashes;
 
     std::string line;
     while (std::getline(std::cin, line)) {
@@ -406,10 +415,10 @@ void uci_loop(size_t hash_mb) {
             }
         }
         else if (cmd == "position") {
-            parse_position_command(line, board);
+            parse_position_command(line, board, game_hashes);
         }
         else if (cmd == "go") {
-            if (handle_go_command(line, board, tt)) {
+            if (handle_go_command(line, board, tt, game_hashes)) {
                 return;  // Quit received during search
             }
         }

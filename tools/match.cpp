@@ -659,11 +659,11 @@ GameOutcome play_game(Engine& white, Engine& black, const std::string& start_fen
         int legal_count = 0;
         for (int i = 0; i < moves.size; ++i) {
             Move32 m = moves[i];
-            make_move(board, m);
+            UndoInfo undo = make_move(board, m);
             if (!is_illegal(board)) {
                 legal_count++;
             }
-            unmake_move(board, m);
+            unmake_move(board, m, undo);
         }
 
         if (legal_count == 0) {
@@ -720,7 +720,7 @@ GameOutcome play_game(Engine& white, Engine& black, const std::string& start_fen
             break;
         }
 
-        make_move(board, move);
+        (void)make_move(board, move);
         move_history.push_back(uci_move);
         outcome.num_moves++;
 
@@ -1008,7 +1008,7 @@ std::string get_fen_at_move(const GameDisplay& game, int move_index) {
     for (int i = 0; i <= move_index; ++i) {
         Move32 move = parse_uci_move(game.moves[i], board);
         if (move.data != 0) {
-            make_move(board, move);
+            (void)make_move(board, move);
         }
     }
     return board.to_fen();

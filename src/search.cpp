@@ -103,10 +103,23 @@ struct SearchContext {
     int pv_length[MAX_PLY] = {};
     Move32 prev_best_move{0};
 
-    SearchContext(Board& b, TTable& t, int time_ms)
+    // Hash history for repetition detection
+    std::array<u64, 1024> hash_stack;
+    int hash_sp = 0;
+
+    SearchContext(Board& b, TTable& t, int time_ms,
+                  const u64* hash_history = nullptr, int hash_history_len = 0)
         : board(b), tt(t),
           start_time(std::chrono::steady_clock::now()),
-          time_limit_ms(time_ms) {}
+          time_limit_ms(time_ms) {
+        if (hash_history && hash_history_len > 0) {
+            int count = std::min(hash_history_len, 1024);
+            for (int i = 0; i < count; ++i) {
+                hash_stack[i] = hash_history[i];
+            }
+            hash_sp = count;
+        }
+    }
 
     bool check_time() {
         // Check global stop flag (set by UCI thread via SearchController)
@@ -337,12 +350,12 @@ static bool in_check(const Board& board) {
 // Check if current position is a repetition of an earlier position
 // Only checks positions with same side to move (every 2nd ply)
 // Bounded by halfmove_clock since captures/pawn moves reset repetition possibility
-// Also bounded by undo_sp to avoid checking beyond available history
-static bool is_repetition(const Board& board) {
-    int limit = std::min((int)board.halfmove_clock, board.undo_sp);
+// Also bounded by hash_sp to avoid checking beyond available history
+static bool is_repetition(const SearchContext& ctx) {
+    int limit = std::min((int)ctx.board.halfmove_clock, ctx.hash_sp);
     for (int i = 2; i <= limit; i += 2) {
-        int idx = board.undo_sp - i;
-        if (board.undo_stack[idx].hash == board.hash) {
+        int idx = ctx.hash_sp - i;
+        if (ctx.hash_stack[idx] == ctx.board.hash) {
             return true;
         }
     }
@@ -413,10 +426,10 @@ static int quiescence(SearchContext& ctx, int alpha, int beta, int ply) {
             }
         }
 
-        make_move(ctx.board, move);
+        UndoInfo undo = make_move(ctx.board, move);
 
         if (is_illegal(ctx.board)) {
-            unmake_move(ctx.board, move);
+            unmake_move(ctx.board, move, undo);
             continue;
         }
 
@@ -424,7 +437,7 @@ static int quiescence(SearchContext& ctx, int alpha, int beta, int ply) {
 
         int score = -quiescence(ctx, -beta, -alpha, ply + 1);
 
-        unmake_move(ctx.board, move);
+        unmake_move(ctx.board, move, undo);
 
         if (ctx.stop_search) return 0;
 
@@ -463,7 +476,7 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
             return 0;
         }
         // Repetition
-        if (is_repetition(ctx.board)) {
+        if (is_repetition(ctx)) {
             return 0;
         }
     }
@@ -504,8 +517,10 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
             int prev_ep;
 
             make_null_move(ctx.board, prev_ep);
+            ctx.hash_stack[ctx.hash_sp++] = ctx.board.hash;  // push POST-null-move hash
             // Pass can_null=false to prevent consecutive null moves
             int null_score = -alpha_beta(ctx, depth - 1 - R, -beta, -beta + 1, ply + 1, false, false);
+            --ctx.hash_sp;
             unmake_null_move(ctx.board, prev_ep);
 
             if (ctx.stop_search) return 0;
@@ -535,10 +550,12 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
             }
         }
 
-        make_move(ctx.board, move);
+        ctx.hash_stack[ctx.hash_sp++] = ctx.board.hash;  // push PRE-move hash
+        UndoInfo undo = make_move(ctx.board, move);
 
         if (is_illegal(ctx.board)) {
-            unmake_move(ctx.board, move);
+            unmake_move(ctx.board, move, undo);
+            --ctx.hash_sp;
             continue;
         }
 
@@ -603,7 +620,8 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
             score = -alpha_beta(ctx, new_depth, -beta, -alpha, ply + 1, is_pv_node);
         }
 
-        unmake_move(ctx.board, move);
+        unmake_move(ctx.board, move, undo);
+        --ctx.hash_sp;
 
         // Prefetch next sibling's TT entry while processing results
         if (Move32 next_move = picker.peek(); next_move.data != 0) {
@@ -649,8 +667,9 @@ static int alpha_beta(SearchContext& ctx, int depth, int alpha, int beta, int pl
     return best_score;
 }
 
-SearchResult search(Board& board, TTable& tt, int time_limit_ms, int depth_limit) {
-    SearchContext ctx(board, tt, time_limit_ms);
+SearchResult search(Board& board, TTable& tt, int time_limit_ms, int depth_limit,
+                    const u64* hash_history, int hash_history_len) {
+    SearchContext ctx(board, tt, time_limit_ms, hash_history, hash_history_len);
 
     SearchResult result;
     result.best_move = Move32(0);

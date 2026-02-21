@@ -79,7 +79,7 @@ static void test_ep_illegal_pin() {
             // Make the move and check if it leaves king in check
             Board copy = board;
             Move32 m = all_moves[i];
-            make_move(copy, m);
+            (void)make_move(copy, m);
             // is_illegal checks if the OPPONENT's king is in check
             // After white moves, it's black's turn, so we check if white king is in check
             bool illegal = is_attacked(copy.king_sq[0], Color::Black, copy);
@@ -157,7 +157,7 @@ static void test_castling_rights_after_rook_capture() {
         }
     }
 
-    make_move(board, rxa8);
+    (void)make_move(board, rxa8);
 
     // Black's queenside castling should be gone (bit 2 = bQ = 4)
     ASSERT_EQ(board.castling & 4, 0);
@@ -220,7 +220,7 @@ static void test_double_push_sets_ep() {
         }
     }
 
-    make_move(board, e2e4);
+    (void)make_move(board, e2e4);
     ASSERT_EQ(board.ep_file, 4);  // e-file = 4
 }
 
@@ -287,7 +287,7 @@ static void test_must_block_check() {
     for (int i = 0; i < moves.size; i++) {
         Board copy = board;
         Move32 m = moves[i];
-        make_move(copy, m);
+        (void)make_move(copy, m);
         // Filter: skip illegal moves (king still in check)
         if (is_attacked(copy.king_sq[0], Color::Black, copy)) {
             continue;  // Pseudo-legal but illegal
@@ -312,7 +312,7 @@ static void test_pinned_piece() {
             // Check if move is legal
             Board copy = board;
             Move32 m = moves[i];
-            make_move(copy, m);
+            (void)make_move(copy, m);
             if (!is_attacked(copy.king_sq[0], Color::Black, copy)) {
                 bishop_moves++;
             }

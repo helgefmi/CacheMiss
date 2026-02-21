@@ -63,12 +63,12 @@ Move32 parse_san_move(const std::string& san, Board& board) {
                 int from_file = m.from() % 8;
                 int to_file = m.to() % 8;
                 if (to_file > from_file) {  // Kingside
-                    make_move(board, m);
+                    UndoInfo undo = make_move(board, m);
                     if (!is_illegal(board)) {
-                        unmake_move(board, m);
+                        unmake_move(board, m, undo);
                         return m;
                     }
-                    unmake_move(board, m);
+                    unmake_move(board, m, undo);
                 }
             }
         }
@@ -83,12 +83,12 @@ Move32 parse_san_move(const std::string& san, Board& board) {
                 int from_file = m.from() % 8;
                 int to_file = m.to() % 8;
                 if (to_file < from_file) {  // Queenside
-                    make_move(board, m);
+                    UndoInfo undo = make_move(board, m);
                     if (!is_illegal(board)) {
-                        unmake_move(board, m);
+                        unmake_move(board, m, undo);
                         return m;
                     }
-                    unmake_move(board, m);
+                    unmake_move(board, m, undo);
                 }
             }
         }
@@ -195,9 +195,9 @@ Move32 parse_san_move(const std::string& san, Board& board) {
         }
 
         // Verify move is legal
-        make_move(board, m);
+        UndoInfo undo = make_move(board, m);
         bool legal = !is_illegal(board);
-        unmake_move(board, m);
+        unmake_move(board, m, undo);
 
         if (legal) {
             return m;
@@ -448,7 +448,7 @@ int main(int argc, char* argv[]) {
                 break;
             }
 
-            make_move(board, move);
+            (void)make_move(board, move);
             ply++;
 
             if (extracted) continue;  // Already got a position from this game

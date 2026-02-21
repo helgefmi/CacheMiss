@@ -110,8 +110,8 @@ MoveList generate_moves(const Board& board);
 template <MoveType type = MoveType::All>
 MoveList generate_moves(const Board& board);
 
-void make_move(Board& board, Move32& move);
-void unmake_move(Board& board, const Move32& move);
+UndoInfo make_move(Board& board, Move32& move);
+void unmake_move(Board& board, const Move32& move, const UndoInfo& undo);
 
 // Null move - just flip the side to move (and clear ep)
 // Used for null move pruning in search

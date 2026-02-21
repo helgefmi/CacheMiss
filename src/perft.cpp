@@ -44,11 +44,11 @@ u64 perft(Board& board, int depth, PerftTable* tt) {
 
     auto moves = generate_moves(board);
     for (auto& move : moves) {
-        make_move(board, move);
+        UndoInfo undo = make_move(board, move);
         if (!is_illegal(board)) {
             nodes += perft(board, depth - 1, tt);
         }
-        unmake_move(board, move);
+        unmake_move(board, move, undo);
     }
 
     // Store in TT
@@ -62,13 +62,13 @@ void divide(Board& board, int depth, PerftTable* tt) {
     u64 total = 0;
 
     for (auto& move : moves) {
-        make_move(board, move);
+        UndoInfo undo = make_move(board, move);
         if (is_illegal(board)) {
-            unmake_move(board, move);
+            unmake_move(board, move, undo);
             continue;
         }
         u64 nodes = (depth > 1) ? perft(board, depth - 1, tt) : 1;
-        unmake_move(board, move);
+        unmake_move(board, move, undo);
 
         std::cout << move.to_string(board) << ": " << nodes << '\n';
         total += nodes;

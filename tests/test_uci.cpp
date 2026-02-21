@@ -8,7 +8,7 @@
 // Helper to apply UCI move
 static void apply_move(Board& board, const std::string& uci) {
     Move32 move = parse_uci_move(uci, board);
-    make_move(board, move);
+    (void)make_move(board, move);
 }
 
 // ============================================================================
@@ -17,7 +17,8 @@ static void apply_move(Board& board, const std::string& uci) {
 
 static void test_position_startpos() {
     Board board("8/8/8/8/8/8/8/8 w - - 0 1");  // Empty board
-    parse_position_command("position startpos", board);
+    std::vector<u64> hashes;
+    parse_position_command("position startpos", board, hashes);
 
     Board expected;
     ASSERT_EQ(board.hash, expected.hash);
@@ -25,7 +26,8 @@ static void test_position_startpos() {
 
 static void test_position_startpos_moves() {
     Board board;
-    parse_position_command("position startpos moves e2e4 e7e5 g1f3", board);
+    std::vector<u64> hashes;
+    parse_position_command("position startpos moves e2e4 e7e5 g1f3", board, hashes);
 
     Board expected;
     apply_move(expected, "e2e4");
@@ -37,7 +39,8 @@ static void test_position_startpos_moves() {
 
 static void test_position_fen() {
     Board board;
-    parse_position_command("position fen r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1", board);
+    std::vector<u64> hashes;
+    parse_position_command("position fen r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1", board, hashes);
 
     Board expected("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1");
     ASSERT_EQ(board.hash, expected.hash);
@@ -45,7 +48,8 @@ static void test_position_fen() {
 
 static void test_position_fen_moves() {
     Board board;
-    parse_position_command("position fen r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1 moves e1g1", board);
+    std::vector<u64> hashes;
+    parse_position_command("position fen r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1 moves e1g1", board, hashes);
 
     Board expected("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1");
     apply_move(expected, "e1g1");

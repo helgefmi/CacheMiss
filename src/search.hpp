@@ -61,4 +61,6 @@ struct SearchResult {
 
 // Search for the best move with iterative deepening.
 // Stops after time_limit_ms milliseconds or depth_limit (0 = unlimited).
-SearchResult search(Board& board, TTable& tt, int time_limit_ms = 10000, int depth_limit = 0);
+// hash_history/hash_history_len: prior position hashes for repetition detection.
+SearchResult search(Board& board, TTable& tt, int time_limit_ms = 10000, int depth_limit = 0,
+                    const u64* hash_history = nullptr, int hash_history_len = 0);
